@@ -406,6 +406,7 @@ def _export_moe_400m(
         "expert_selection_fn": "softmax_weight",
         "expert_weights_norm": False,
         "liwet_selection_bias": True,
+        "moe_capacity_factor": float(src_cfg.get("moe_capacity_factor", 1.25)),
         "bos_token_id": src_cfg.get("bos_token_id", 1),
         "eos_token_id": src_cfg.get("eos_token_id", 2),
         "pad_token_id": src_cfg.get("pad_token_id", 0),

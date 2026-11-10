@@ -1,0 +1,128 @@
+[
+  {
+    "model": "Liwet-400M-A188M-id-chat",
+    "hf_arch": "MixtralForCausalLM",
+    "rope_theta": 10000.0,
+    "tie_word_embeddings": true,
+    "rms_norm_eps": 1e-05,
+    "tokenizer": {
+      "class": "TokenizersBackend",
+      "bos_token": "<bos>",
+      "eos_token": "<eos>",
+      "exact_encode_match": true,
+      "len_encoded": 39,
+      "len_expected": 39
+    },
+    "P1_cpu_fp32": {
+      "n": 10,
+      "min_cosine": 0.9990606,
+      "mean_cosine": 0.99990606,
+      "max_abs_diff": 0.7246596,
+      "top1_match_pct": 100.0
+    },
+    "P2_cpu_fp32_greedy": {
+      "prompts": 2,
+      "steps": 32,
+      "exact_matches": 2,
+      "first_divs": [
+        32,
+        32
+      ]
+    },
+    "P3_cpu_fp32_router_pct": 99.688,
+    "P1b_layerwise_moe": {
+      "prompts": 2,
+      "max_abs_diff": 3.0518e-05,
+      "router_match_pct": 100.0
+    },
+    "tie_divergences": {
+      "chat_role_01": {
+        "first_layer": 24,
+        "first_row": 12,
+        "n_diff_rows": 1,
+        "max_selection_margin": 2.384185791015625e-07,
+        "is_tie": true,
+        "ref_experts": [
+          6,
+          7
+        ],
+        "hf_experts": [
+          6,
+          3
+        ],
+        "min_cosine": 0.9990606
+      }
+    },
+    "PASSED": true
+  },
+  {
+    "model": "Liwet-163M-id-chat",
+    "hf_arch": "LlamaForCausalLM",
+    "rope_theta": 10000.0,
+    "tie_word_embeddings": true,
+    "rms_norm_eps": 1e-05,
+    "tokenizer": {
+      "class": "TokenizersBackend",
+      "bos_token": "<bos>",
+      "eos_token": "<eos>",
+      "exact_encode_match": true,
+      "len_encoded": 39,
+      "len_expected": 39
+    },
+    "P1_cpu_fp32": {
+      "n": 10,
+      "min_cosine": 1.0,
+      "mean_cosine": 1.0,
+      "max_abs_diff": 1.14e-05,
+      "top1_match_pct": 100.0
+    },
+    "P2_cpu_fp32_greedy": {
+      "prompts": 2,
+      "steps": 32,
+      "exact_matches": 2,
+      "first_divs": [
+        32,
+        32
+      ]
+    },
+    "P3_cpu_fp32_router_pct": null,
+    "P1b_layerwise_moe": null,
+    "tie_divergences": {},
+    "PASSED": true
+  },
+  {
+    "model": "Liwet-66M-id-chat",
+    "hf_arch": "LlamaForCausalLM",
+    "rope_theta": 10000.0,
+    "tie_word_embeddings": true,
+    "rms_norm_eps": 1e-06,
+    "tokenizer": {
+      "class": "TokenizersBackend",
+      "bos_token": null,
+      "eos_token": "<|endoftext|>",
+      "exact_encode_match": true,
+      "len_encoded": 30,
+      "len_expected": 30
+    },
+    "P1_cpu_fp32": {
+      "n": 10,
+      "min_cosine": 1.0,
+      "mean_cosine": 1.0,
+      "max_abs_diff": 6.2e-06,
+      "top1_match_pct": 100.0
+    },
+    "P2_cpu_fp32_greedy": {
+      "prompts": 2,
+      "steps": 32,
+      "exact_matches": 2,
+      "first_divs": [
+        32,
+        32
+      ]
+    },
+    "P3_cpu_fp32_router_pct": null,
+    "P1b_layerwise_moe": null,
+    "tie_divergences": {},
+    "PASSED": true
+  }
+]

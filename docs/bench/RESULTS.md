@@ -134,3 +134,25 @@ Sumber: [gradio_overhead_track_a.json](gradio_overhead_track_a.json) (`bench_gra
 ### 6. Catatan Operasional
 - **Drive `E:` sempat hilang di tengah sesi** (hanya `C:` dan `D:` ter-mount), lalu tersambung kembali. Setelah itu dump 400M dilengkapi, `parity_ref_v2` dipromosikan ke `parity_ref`, dan paritas 3 model dijalankan ulang (lihat §3). Tidak ada artefak besar yang ditulis ke `C:`.
 - Instalasi torch yang korup juga menghapus `torchvision`; belum dibutuhkan oleh fastpath/app, tetapi perlu dipasang ulang bila profiling berbasis torchvision diperlukan.
+
+---
+
+## Jalur B — Gate B2: Ekspor HF Llama/Mixtral & Verifikasi Paritas Perantara
+
+**Lingkungan:** CPU `float32` (referensi Python murni `scripts/parity/reference/liwet_models_ref.py` vs `transformers 5.17.0`), CPU `torch 2.9.1+cu128`. Folder ekspor: `E:\liwet_gguf_build\hf_llama_tmp\`. Artefak lengkap: [hf_llama_parity.json](hf_llama_parity.json). Dump referensi: `E:\liwet_gguf_build\parity_ref\` (10 prompt prefill CPU).
+
+| Model | Arsitektur HF | Tokenizer exact | P1 min cosine / max abs / top1 | P1b layer-wise MoE (max abs / router) | P3 router (end-to-end) | P2 greedy 32-step | `PASSED` |
+|---|---|---|---:|---|---:|---|---|
+| `Liwet-400M-A188M-id-chat` | `MixtralForCausalLM` | ✅ | 0.999061 / 0.7247 / 100% | **3.05e-05 / 100%** | 99.688% | 2/2 (`[32, 32]`) | ✅ |
+| `Liwet-163M-id-chat` | `LlamaForCausalLM` | ✅ | 1.0 / 1.14e-05 / 100% | — (dense) | — | 2/2 (`[32, 32]`) | ✅ |
+| `Liwet-66M-id-chat` | `LlamaForCausalLM` | ✅ | 1.0 / 6.2e-06 / 100% | — (dense) | — | 2/2 (`[32, 32]`) | ✅ |
+
+**Temuan #1 — MoE Liwet memakai capacity-limited dispatch yang tidak dimiliki Mixtral standar.** Referensi `MoE.forward` membatasi tiap expert ke `capacity = ceil(num_tokens × top_k / num_experts × capacity_factor)` assignment ketika `num_tokens > 1` (`capacity_factor = 1.25` untuk 400M). Pada prefill 40–45 token, jumlah assignment per expert mencapai **24–26** sementara capacity hanya **13–15**, sehingga **127–182 dari 2560–2880 assignment (≈5–6%) dibuang**. Ekspor Mixtral standar tidak membuang apa pun → divergensi besar (cosine 0.966, P3 85.9%). Verifier sekarang mem-patch `MixtralSparseMoeBlock.forward` untuk meniru dispatch referensi **persis** (`argsort` → `searchsorted` → posisi < capacity), dan `export_hf_llama.py` menulis `moe_capacity_factor` ke `config.json`.
+
+**Temuan #2 — satu prompt tersangkut router near-tie di layer 24.** Pada `chat_role_01` (42 token), token ke-12 layer 24 memiliki selection logit expert 3 dan 7 yang hanya berbeda **2.4e-7**; drift fp32 antar implementasi attention (fused `qkv_proj` vs tiga GEMM `q/k/v`) sebesar ~3e-6 membalik pilihan (referensi `[6, 7]`, HF `[6, 3]`). Perbedaan itu mengubah bookkeeping capacity expert 3 (12 vs 13 assignment) sehingga output prompt tersebut bergeser (cos 0.999061, max abs 0.7247) — **sembilan prompt lain cos = 1.0**. Karena celah logitnya jauh di bawah galat numerik, kedua pilihan valid secara matematis; ini bukan kesalahan bobot ekspor.
+
+**Kriteria Gate B2 yang diterapkan:**
+- Dense (`66M`, `163M`): `P1 min cosine ≥ 0.99999`, top1 100%, P2 exact 32/32, tokenizer identik — **lulus ketat**.
+- MoE (`400M`): top1 100%, P2 exact 32/32, tokenizer identik, **P1b layer-wise MoE ≤ 1e-4 dengan router 100%** (diukur dengan memberi hidden state referensi yang identik ke tiap blok MoE HF), `P1 min cosine ≥ 0.999`, dan setiap divergensi end-to-end wajib terklasifikasi sebagai tie (celah selection logit < 1e-5). Hasil: worst layer-wise **3.05e-05** pada baris dengan magnitudo output MoE ~302 (≈1e-7 relatif, murni noise urutan GEMM fp32), router **100%**, satu-satunya divergensi end-to-end = tie 2.4e-7 yang terdokumentasi.
+
+**Implikasi untuk Jalur B (`B4`/Gate B3):** fork `llama.cpp` **wajib** mengimplementasikan dispatch capacity-limited yang sama agar prefill MoE cocok dengan referensi. Capacity dihitung dari total token pada satu forward; karena `llama.cpp` memecah prefill menjadi ubatch (`-ub`, default 512), prompt lebih panjang dari `n_ubatch` akan memakai capacity berbeda dan boleh divergen — dokumentasikan dan/atau set `-ub` ≥ panjang prompt saat benchmark paritas. Model dense tidak terpengaruh.

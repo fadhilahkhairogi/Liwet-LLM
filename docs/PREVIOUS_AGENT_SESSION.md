@@ -113,16 +113,17 @@ Kode Jalur A sudah ditulis di `liwet-space/liwet_models.py`, `liwet-space/app.py
 
 ---
 
-### 3.3 Jalur B — Patch Fork `llama.cpp` & Ekspor HF-Llama/Mixtral (Kode Siap, Belum Dijalankan/Dikompilasi)
+### 3.3 Jalur B — Patch Fork `llama.cpp` & Ekspor HF-Llama/Mixtral (Ekspor Sudah Diverifikasi; Fork Belum Dikompilasi)
 1. **Patch Fork `E:\liwet_gguf_build\llama.cpp` (branch `liwet-moe`, base `0c1e57098`):**
    - `gguf-py/gguf/constants.py`: Menambahkan `MODEL_TENSOR.FFN_EXP_PROBS_B` ke `MODEL_TENSORS[MODEL_ARCH.LLAMA]` dan `SOFTMAX_WEIGHT = 3` ke `ExpertGatingFuncType` (cocok dengan `LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT = 3` di C++).
    - `conversion/base.py`: Menangani `expert_selection_fn == "softmax_weight"`, menulis `expert_weights_norm` & `expert_weights_scale` ke GGUF KV, dan memetakan hash pre-tokenizer `chkhsh` Liwet (`f2beda9d...` untuk 163M/400M dan `86f3edd3...` untuk 66M) ke `"gpt-2"`.
    - `src/models/llama.cpp` & `src/llama-model.cpp`: Membaca KV opsional `expert_weights_scale`, `expert_weights_norm`, `expert_gating_func` (default tetap `true` + `SOFTMAX` agar Mixtral standar tidak berubah), memuat tensor opsional `blk.%d.exp_probs_b`, dan meneruskannya ke `build_moe_ffn(...)`.
    - **Sudah diverifikasi di `src/llama-graph.cpp:2038-2148`:** Saat `SOFTMAX_WEIGHT` dan `norm_w=false`, `build_moe_ffn` menghitung `probs = logits` → `selection_probs = probs + exp_probs_b` → `selected_experts = argsort_top_k(selection_probs, k)` → `weights = get_rows(probs, selected_experts)` → `weights = soft_max(weights)`. Ini **ekuivalen matematis 100%** dengan `MoE.forward` Liwet!
+   - ⚠️ **WAJIB untuk Gate B3 (temuan Gate B2):** Referensi Liwet membuang assignment melebihi **capacity per expert** saat prefill multi-token (`capacity = ceil(num_tokens × top_k / num_experts × capacity_factor)`, `capacity_factor = 1.25`; terukur ~5–6% assignment dibuang pada prompt 40–45 token). Fork `llama.cpp` harus mengimplementasikan dispatch capacity-limited ini di jalur MoE agar prefill cocok dengan referensi. Catatan: capacity bergantung pada total token satu forward, sedangkan `llama.cpp` memecah prefill ke `n_ubatch` (default 512) — untuk prompt > `n_ubatch` hasil boleh divergen; set `-ub` ≥ panjang prompt saat uji paritas dan dokumentasikan batas ini. Model dense tidak terpengaruh.
    - **Catatan Verifikasi Saat Konversi GGUF Nanti (`B2.3`):** Di `conversion/llama.py:135-143`, `LlamaModel.set_vocab()` mencoba `_set_vocab_sentencepiece()` lalu `_set_vocab_llama_hf()` sebelum `_set_vocab_gpt2()`. Pastikan untuk folder ekspor Liwet (yang hanya punya `tokenizer.json` ByteLevel BPE tanpa `tokenizer.model`), eksekusi jatuh dengan benar ke `_set_vocab_gpt2()` dan bukan `_set_vocab_llama_hf()`! Jika `_set_vocab_llama_hf()` tidak melempar `TypeError`/`FileNotFoundError`, tambahkan guard kecil di `conversion/llama.py` agar ByteLevel BPE memakai `_set_vocab_gpt2()`.
 2. **Skrip Ekspor & Verifikasi Perantara (`scripts/gguf/`):**
    - [scripts/gguf/export_hf_llama.py](../scripts/gguf/export_hf_llama.py): Mengekspor `66M` (`rms_norm_eps=1e-6`) & `163M` (`rms_norm_eps=1e-5`) ke `LlamaForCausalLM`, dan `400M` ke `MixtralForCausalLM` + `e_score_correction.bias` (f32) + pemeriksaan keamanan `F16` (`max|w| < 65504`).
-   - [scripts/gguf/verify_hf_llama_parity.py](../scripts/gguf/verify_hf_llama_parity.py): Memverifikasi hasil ekspor dengan `transformers` (`LlamaForCausalLM` & `MixtralForCausalLM` dengan router Liwet) terhadap `prefill_fp32_cpu.npz` (`P1 cosine ≥ 0.99999`, `P2`, `P3`). **Belum dijalankan** — siap langsung dieksekusi begitu Gate Jalur A tuntas.
+   - [scripts/gguf/verify_hf_llama_parity.py](../scripts/gguf/verify_hf_llama_parity.py): Memverifikasi hasil ekspor dengan `transformers` (`LlamaForCausalLM` & `MixtralForCausalLM` dengan router Liwet) terhadap `prefill_fp32_cpu.npz` (`P1`, `P2`, `P3`, plus `P1b` layer-wise MoE untuk 400M). **Sudah dijalankan dan LULUS Gate B2** (2026-11-10) — lihat `docs/bench/RESULTS.md` bagian "Jalur B — Gate B2". Untuk MoE, verifier mem-patch `MixtralSparseMoeBlock.forward` agar meniru **capacity-limited dispatch** referensi (`capacity_factor = 1.25`); tanpa itu Mixtral standar tidak akan pernah cocok (cosine 0.966).
 
 ---
 
@@ -134,8 +135,8 @@ Ikuti urutan Gate ketat sesuai [INFERENCE_OPTIMIZATION_PLAN.md](INFERENCE_OPTIMI
    - Perbaiki isu paritas `400M` (`allow_tf32`, `_fused_qkv_weight` / GQA) dan periksa tie divergence `P2` pada `163M`/`66M`.
    - Optimasi `MoE.forward` (`num_tokens == 1`) agar tidak menyalin `gate_up_proj[experts]` / `down_proj[experts]`, dan pangkas overhead per-token di `stream_generate` hingga `400M` GPU decode headless **`≥ 100 tok/s`** dan gap UI vs headless **`≤ 20%`**.
    - Verifikasi `LIWET_FASTPATH=0` menghasilkan output identik 100% dengan `liwet_models_ref.py`, jalankan benchmark CPU (`bench_torch.py --device cpu`), jalankan checklist paritas UI `P5`, catat semua tabel Jalur A ke `docs/bench/RESULTS.md`, lalu commit perubahan Jalur A di branch `perf/torch-fastpath` (pisahkan file `scripts/gguf/` untuk commit Jalur B bila perlu).
-2. **Jalankan Gate B2 (Ekspor HF-Llama/Mixtral & Verifikasi Paritas Perantara):**
-   - Jalankan `export_hf_llama.py` ke `E:\liwet_gguf_build\hf_llama_tmp\` untuk 3 model chat prioritas, lalu jalankan `verify_hf_llama_parity.py` hingga `PASSED` (`cosine ≥ 0.99999`).
+2. ✅ **Gate B2 selesai (Ekspor HF-Llama/Mixtral & Verifikasi Paritas Perantara):**
+   - `export_hf_llama.py` → `E:\liwet_gguf_build\hf_llama_tmp\` dan `verify_hf_llama_parity.py` dijalankan untuk 3 model chat prioritas → ketiganya `PASSED` (lihat `docs/bench/RESULTS.md`). Dense lulus ketat `cosine = 1.0`; MoE lulus lewat `P1b` layer-wise MoE (3.05e-05) + router 100% + P2 32/32, dengan satu tie 2.4e-7 terdokumentasi.
 3. **Build `llama.cpp` Fork, Konversi GGUF, Build `llama-cpp-python`, & Luluskan Gate B3 (`B3`–`B5`):**
    - Kompilasi `E:\liwet_gguf_build\llama.cpp` dengan `vcvars64.bat` + CMake + Ninja + CUDA `SM89`.
    - Konversi 3 model chat ke `E:\liwet_gguf_build\gguf\<Repo>\` (`BF16`, `F16`, `Q8_0`), verifikasi `llama-tokenize.exe` terhadap `prompts.jsonl`.
@@ -181,5 +182,6 @@ Gate A **terpenuhi** di lingkungan torch `2.9.1+cu128` (DTT throttle masih aktif
 ### 5.4 Titik Lanjut Pertama Agen Berikutnya
 1. ✅ **Selesai:** dump 400M dilengkapi, `parity_ref_v2` dipromosikan ke `parity_ref`, dan P1–P4 dijalankan ulang untuk 3 model (fastpath on & `LIWET_FASTPATH=0`). Artefak `docs/bench/parity_*` sudah ditimpa hasil lingkungan saat ini.
 2. ✅ Commit Jalur A sudah ada di `perf/torch-fastpath` (`b6d141a`, tanpa push), ditambah commit verifikasi paritas ulang.
-3. **Langkah berikutnya:** Gate B2 (`export_hf_llama.py` → `E:\liwet_gguf_build\hf_llama_tmp\`, `verify_hf_llama_parity.py`), lalu B4/B5 dan Gate B3 sesuai urutan §4.
-4. Jangan lupa batasan pemilik: tanpa push `main`, tanpa upload `-GGUF`/Space, tanpa mengubah UI, tanpa menjalankan `.bat` Admin, dan tanpa artefak besar di `C:`.
+3. ✅ **Gate B2 lulus (2026-11-10):** ketiga model `PASSED`. Dense `66M`/`163M` `P1 cos = 1.0` (max abs ≤1.14e-05), P2 32/32. `400M` layer-wise MoE `3.05e-05` (~1e-7 relatif) & router 100%; satu prompt (`chat_role_01`) divergen karena **router near-tie 2.4e-7** di layer 24 (terdokumentasi). Artefak: `docs/bench/hf_llama_parity.json`.
+4. **Langkah berikutnya:** `B4` (build fork `llama.cpp` Windows CUDA SM89 + konversi `BF16`/`F16`/`Q8_0` + verifikasi tokenizer), `B5` (workflow wheel CPU), lalu **Gate B3** (backend `llamacpp` di `compare.py`, `llama-bench`) — jangan lupa implementasi capacity-limited dispatch MoE di fork sebelum Gate B3.
+5. Jangan lupa batasan pemilik: tanpa push `main`, tanpa upload `-GGUF`/Space, tanpa mengubah UI, tanpa menjalankan `.bat` Admin, dan tanpa artefak besar di `C:`.

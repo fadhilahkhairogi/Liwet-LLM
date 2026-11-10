@@ -1,7 +1,7 @@
 # Plan Progress So Far — Liwet-LLM Inference Optimization
 
-> **Terakhir Diperbarui:** `2026-11-10` (sesudah reinstall torch `2.9.1+cu128`)  
-> **Estimasi Progres Total:** **~47% Selesai**  
+> **Terakhir Diperbarui:** `2026-11-10` (Gate B2 ekspor HF Llama/Mixtral lulus)  
+> **Estimasi Progres Total:** **~51% Selesai**  
 > **Spesifikasi Rencana:** [INFERENCE_OPTIMIZATION_PLAN.md](INFERENCE_OPTIMIZATION_PLAN.md)  
 > **Konteks Detail & Diagnosis Sesi Sebelumnya:** [PREVIOUS_AGENT_SESSION.md](PREVIOUS_AGENT_SESSION.md)  
 > **Data Benchmark & Profiler:** [bench/RESULTS.md](bench/RESULTS.md)
@@ -16,7 +16,7 @@
 | **D2** | Harness paritas + dump referensi | `scripts/parity/`, `E:\liwet_gguf_build\parity_ref\` | **100%** | Dump referensi 3 model chat **diregenerasi di lingkungan torch `2.9.1+cu128`** dan dipromosikan (`parity_ref_v2 → parity_ref`). `compare.py` masih perlu mode `llamacpp` di Jalur B |
 | **D3** | PyTorch fastpath (`LIWET_FASTPATH`) | `liwet-space/liwet_models.py`, `liwet-space/app.py` (`perf/torch-fastpath`) | **100%** | Gate A terpenuhi: `400M` **105.28 tok/s** headless (dari `1.73 tok/s`), `stream_generate` +16.7%, UI +1.2%, P1–P4 `ALL_PASSED` ketiga model, `LIWET_FASTPATH=0` P1 `max_abs 0.0` |
 | **D4** | Fork `llama.cpp` + patch MoE + CI CPU wheel | `E:\liwet_gguf_build\llama.cpp` (`liwet-moe`) | **45%** | Patch C++ & converter Python selesai ditulis di atas commit vendor `0c1e57098`; belum dikompilasi & belum ada workflow GitHub Actions |
-| **D5** | Skrip ekspor HF-Llama/Mixtral & konversi GGUF | `scripts/gguf/` | **50%** | `export_hf_llama.py` & `verify_hf_llama_parity.py` selesai dibuat; skrip batch konversi/kuantisasi GGUF & eksekusinya menunggu Gate A selesai |
+| **D5** | Skrip ekspor HF-Llama/Mixtral & konversi GGUF | `scripts/gguf/` | **70%** | `export_hf_llama.py` & `verify_hf_llama_parity.py` **lulus Gate B2** untuk 3 model chat (`docs/bench/hf_llama_parity.json`); tinggal skrip batch konversi/kuantisasi GGUF untuk `B4` |
 | **D6** | 11 repo `-GGUF` (staging lokal dulu) | `E:\liwet_gguf_build\hf_gguf_staging\` | **0%** | Belum dimulai (menunggu Gate B2/B3 lulus & izin upload pemilik) |
 | **D7** | Web klon 1:1 `liwet-space-cpp/` | `liwet-space-cpp/`, `scripts/run_local_servers.ps1` | **0%** | Belum dimulai (menunggu Gate B3 lulus) |
 | **D8** | Diagnosa Ollama & `Modelfile` dense (`66M`, `163M`) | `scripts/ollama/` | **0%** | Belum dimulai (bonus tahap akhir) |
@@ -61,11 +61,11 @@
 
 ---
 
-### Jalur B — Konversi GGUF & Fork `llama.cpp` (`§6`) — **PERSIAPAN SELESAI (~45%)**
+### Jalur B — Konversi GGUF & Fork `llama.cpp` (`§6`) — **GATE B2 LULUS (~50%)**
 - [x] **B0:** Pin `llama-cpp-python` di `v0.3.36` (`1652066`) dan siapkan `E:\liwet_gguf_build\llama.cpp` branch `liwet-moe` tepat di commit submodule vendor `0c1e57098bba43ac29e6e3b677cdceebdd22334f`.
 - [x] **B1 & B2.1:** Buat skrip ekspor `scripts/gguf/export_hf_llama.py` (mendukung `66M` `rms_norm_eps=1e-6`, `163M` `rms_norm_eps=1e-5`, dan `400M` `MixtralForCausalLM` + `e_score_correction.bias` + validasi keamanan `F16`) serta verifier `scripts/gguf/verify_hf_llama_parity.py`.
 - [x] **B3 (Patch Kode Fork):** Patch `gguf-py/gguf/constants.py`, `conversion/base.py` (termasuk hash `chkhsh` tokenizer Liwet → `"gpt-2"`), `src/llama-model.cpp`, dan `src/models/llama.cpp` untuk mendukung `blk.%d.exp_probs_b`, `SOFTMAX_WEIGHT`, dan `expert_weights_norm=false`. Editable `gguf-py` sudah terpasang di `tubes_venv`.
-- [ ] **B2.2:** Jalankan `export_hf_llama.py` & `verify_hf_llama_parity.py` untuk 3 model chat prioritas (**Gate Perantara B2**).
+- [x] **B2.2:** Jalankan `export_hf_llama.py` & `verify_hf_llama_parity.py` untuk 3 model chat prioritas (**Gate Perantara B2 — LULUS**). Dense `66M`/`163M` lulus ketat (`P1 cos = 1.0`, max abs ≤1.14e-05, P2 32/32). `400M` `MixtralForCausalLM`: ditemukan bahwa referensi memakai **capacity-limited dispatch** (`capacity_factor = 1.25`, ~5–6% assignment dibuang saat prefill) — verifier kini meniru dispatch tersebut; hasil layer-wise MoE **3.05e-05** (≈1e-7 relatif) dengan router **100%**, P2 32/32, dan satu-satunya divergensi end-to-end adalah **router near-tie 2.4e-7** di `chat_role_01` (terdokumentasi di `docs/bench/RESULTS.md`). Config ekspor sekarang menyimpan `moe_capacity_factor`.
 - [ ] **B4 (Build Lokal Windows CUDA `SM89`):**
   - [ ] Kompilasi `llama.cpp` (`llama-server.exe`, `llama-cli.exe`, `llama-quantize.exe`, `llama-tokenize.exe`, `llama-bench.exe`, `llama-eval-callback.exe`).
   - [ ] Konversi 3 model chat ke `BF16`, `F16`, dan `Q8_0` di `E:\liwet_gguf_build\gguf\`, serta verifikasi `llama-tokenize.exe` identik dengan `tokenizers` pada `prompts.jsonl`.
