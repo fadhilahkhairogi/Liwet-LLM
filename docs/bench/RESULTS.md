@@ -380,13 +380,25 @@ referensi fp32 bahkan turun ke 0.152 — jadi ini bukan artefak bf16. Untuk prom
 median cosine 0.998 dan P3 90% konsisten dengan 400M chat.
 
 **Diagnosis 400M base:** top-1 rendah bukan karena logit jauh — median/mean cosine justru lulus
-(0.9974/0.9931). Base model menghasilkan distribusi next-token yang jauh lebih datar: pada 10
-prompt yang sama, referensi bf16 vs fp32 hanya sepakat top-1 **40%**, sedangkan kandidat vs fp32
-sepakat **80%**. Artinya kandidat lebih dekat ke ground-truth fp32 daripada referensi bf16 yang
-dipakai sebagai pembanding. P2 juga divergen di step 0–1 dengan celah referensi 0.06–0.56; ini
-konsisten dengan near-tie/multimodalitas base model, bukan error dispatch. P3 71–72% berasal dari
-router yang lebih sering near-tie pada model base (batch layer-wise reference bf16 vs fp32 sendiri
-hanya 85–90%).
+(0.9974/0.9931). Base model menghasilkan distribusi next-token yang jauh lebih datar, sehingga
+top-1 sangat sensitif terhadap galat kecil.
+
+**Retest referensi fp32 (2026-11-11, atas keputusan pemilik).** Seluruh 35 prompt didump ulang
+sebagai referensi **fp32 CPU penuh** (`prefill_fp32_cpu_full.npz`) dan `compare.py --device cpu`
+dijalankan ulang untuk ketiga quant:
+
+| Quant | Median cos | Mean cos | Min cos | top-1 | P3 router |
+|---|---:|---:|---:|---:|---:|
+| BF16 | 0.99961 | 0.99859 | 0.97917 | 85.71% | 89.87% |
+| F16 | 0.99986 | 0.99871 | 0.97980 | 80.00% | 90.44% |
+| Q8_0 | 0.99925 | 0.99781 | 0.96021 | 68.57% | 85.04% |
+
+Stabilitas referensi bf16 terhadap fp32 pada 35 prompt yang sama: **top-1 hanya 57.14%**, median
+cosine 0.99709, mean 0.99126, min 0.83758 (`raw_bos_long_2048`), dan kesesuaian set router
+**70.45%**. Artinya kandidat GGUF (top-1 85.7% vs fp32) justru **lebih dekat ke fp32 daripada
+referensi bf16 itu sendiri** (57.1%). P3 kandidat vs fp32 (89.9%/90.4%) juga melampaui kesesuaian
+bf16-vs-fp32 (70.5%). Ambang top-1 ≥95% karenanya tidak dapat diadili secara sah terhadap
+referensi bf16 yang hanya 57% stabil; tidak ada ground truth stabil yang mencapai 95%.
 
 **Status kriteria khusus MoE (disetujui pemilik 2026-11-10):**
 
@@ -394,11 +406,12 @@ hanya 85–90%).
 |---|---|---|---|---|---|
 | chat | ✅ 0.997 | ✅ 0.995 | ✅ 100% / 97.1% | ✅ 88.8% / 88.4% | ✅ |
 | instruct | ✅ 0.998 | ❌ 0.9838 / 0.9888 | ✅ 97.1% | ✅ 90.4% / 90.5% | ⚠️ mean (satu prompt panjang) |
-| base | ✅ 0.997 | ✅ 0.993 | ❌ 65.7% / 60.0% | ❌ 72.0% / 70.8% | ❌ menunggu keputusan pemilik |
+| base (vs fp32) | ✅ 0.9996 / 0.9999 | ✅ 0.9986 / 0.9987 | ❌ 85.7% / 80.0% | ✅ 89.9% / 90.4% | ⚠️ eksperimental — lihat catatan |
 
 Tidak ada klaim bit-parity untuk 400M. README staging 400M menandai
-"numerically approximate — bukan bit-parity"; README base secara eksplisit menyatakan belum
-memenuhi kriteria dan belum boleh dipublikasikan sebagai lulus.
+"numerically approximate — bukan bit-parity". README base menyatakan secara eksplisit bahwa
+top-1 tetap di bawah ambang 95% meskipun referensi bf16 terbukti tidak stabil, sehingga model
+dipublikasikan sebagai **eksperimental**, bukan sebagai "lulus".
 
 ### 9. Benchmark 8 varian sisa
 
@@ -449,7 +462,7 @@ memberi 90.5/94.3.
 | Dense 163M P2-defrep median ≥96 | 12.5–87.5; semua divergensi tie/near-tie referensi | ⚠️ terdokumentasi |
 | MoE 400M chat kriteria khusus | median/mean ≥0.99, top1 100/97.1%, P3 ≥88% | ✅ |
 | MoE 400M instruct kriteria khusus | median ✅, top1 97.1%, P3 ≥90%; mean 0.9838/0.9888 (1 prompt 2048) | ⚠️ mean |
-| MoE 400M base kriteria khusus | median/mean ✅; top1 65.7/60.0%, P3 72.0/70.8% | ❌ **keputusan pemilik** |
+| MoE 400M base kriteria khusus (retest vs fp32) | median ✅ 0.9996/0.9999, mean ✅ 0.9986/0.9987; top1 ⚠️ 85.7/80.0% (ref bf16 sendiri 57.1%); P3 ✅ 89.9/90.4% | ⚠️ **eksperimental** |
 | CPU Q8_0 ≥25 tok/s (11 varian) | 90.5–331.3 tok/s | ✅ |
 | GPU decode dense | 1.7–2.7× Jalur A; 400M ×0.28–0.32 | ✅ dense / ⚠️ MoE |
 | Ollama dense greedy 8/8 | identik dengan backend app | ✅ |
@@ -458,7 +471,8 @@ memberi 90.5/94.3.
 **Kesimpulan:** seluruh artefak Jalur B selesai secara lokal. Dense 66M/163M lulus P1/P4 dengan
 margin besar; kegagalan P2-defrep bersifat tie bf16 yang terdokumentasi. 400M chat lulus kriteria
 khusus; 400M instruct memenuhi median/top-1/P3 tetapi mean cosine sedikit di bawah 0.99 karena satu
-prompt 2048 token (capacity-dispatch). **400M base tidak memenuhi kriteria khusus** (top-1 & P3)
-meskipun median/mean cosine lulus; bukti menunjukkan referensi bf16 sendiri tidak stabil untuk
-model base (bf16-vs-fp32 top-1 agreement 40%). Status akhir 400M base menunggu keputusan pemilik
-sebelum README publik/upload. Tidak ada upload HF atau pembuatan Space pada tahap ini.
+prompt 2048 token (capacity-dispatch). Retest fp32 400M base memindahkan P3 ke 89.9%/90.4% dan
+median/mean cosine jelas lulus; top-1 tetap 85.7%/80.0% (<95%), tetapi referensi bf16 yang menjadi
+dasar ambang itu sendiri hanya sepakat 57.1% dengan fp32 — kandidat lebih dekat ke fp32 daripada
+referensi. **400M base dipublikasikan sebagai eksperimental** dengan catatan ini, bukan sebagai
+"lulus". Upload HF dijalankan atas izin eksplisit pemilik (2026-11-11); pembuatan Space belum.

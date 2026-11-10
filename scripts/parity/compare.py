@@ -51,6 +51,7 @@ def _eval_p1(ref_logits: np.ndarray, cand_logits: np.ndarray, regime: str) -> di
         if int(np.argmax(r)) == int(np.argmax(c)):
             top1_matches += 1
     min_cos = min(cos_list) if cos_list else 0.0
+    median_cos = statistics.median(cos_list) if cos_list else 0.0
     mean_cos = statistics.mean(cos_list) if cos_list else 0.0
     max_abs = max(max_abs_list) if max_abs_list else 0.0
     top1_pct = 100.0 * top1_matches / max(1, n)
@@ -64,6 +65,7 @@ def _eval_p1(ref_logits: np.ndarray, cand_logits: np.ndarray, regime: str) -> di
     return {
         "n": n,
         "min_cosine": round(min_cos, 6),
+        "median_cosine": round(median_cos, 6),
         "mean_cosine": round(mean_cos, 6),
         "max_abs_diff": round(max_abs, 5),
         "top1_match_pct": round(top1_pct, 2),
@@ -477,7 +479,12 @@ def main() -> None:
     ref_dir = Path(args.ref_root) / short
 
     ref_bf16 = np.load(ref_dir / "prefill_bf16_cuda.npz")
-    ref_fp32 = np.load(ref_dir / "prefill_fp32_cpu.npz")
+    # The default fp32 dump is a stratified 10-prompt subset; use the full-coverage dump when
+    # it exists (e.g. 400M base re-test) so P1/P3 are not limited to the subset.
+    fp32_path = ref_dir / "prefill_fp32_cpu_full.npz"
+    if not fp32_path.exists():
+        fp32_path = ref_dir / "prefill_fp32_cpu.npz"
+    ref_fp32 = np.load(fp32_path)
     ref_greedy_norep = json.loads((ref_dir / "greedy_no_rep.json").read_text(encoding="utf-8"))
     ref_greedy_defrep = json.loads((ref_dir / "greedy_default_rep.json").read_text(encoding="utf-8"))
     ref_p4 = np.load(ref_dir / "sampling_p4.npz")
@@ -521,8 +528,15 @@ def main() -> None:
         # truncates the token tail instead); P3 compares the remaining prompts only.
         meta = json.loads((ref_dir / "meta.json").read_text(encoding="utf-8"))
         prompts = meta["prompts"]
-        keep = [i for i, p in enumerate(prompts) if "long_2048" not in p["id"] and "long_1024" not in p["id"]]
-        p3_prompts = [prompts[i] for i in keep]
+        by_id = {p["id"]: p for p in prompts}
+        if args.device == "cpu" and prefill_ids_order is not None:
+            # Ref rows follow the fp32 dump's prompt order, not meta.json's order.
+            keep = [i for i, pid in enumerate(prefill_ids_order)
+                    if "long_2048" not in pid and "long_1024" not in pid]
+            p3_prompts = [by_id[prefill_ids_order[i]] for i in keep]
+        else:
+            keep = [i for i, p in enumerate(prompts) if "long_2048" not in p["id"] and "long_1024" not in p["id"]]
+            p3_prompts = [prompts[i] for i in keep]
         cand_experts = _dump_experts_via_eval_callback(
             Path(args.eval_callback_bin),
             Path(args.gguf),

@@ -1,7 +1,7 @@
 # Plan Progress So Far — Liwet-LLM Inference Optimization
 
-> **Terakhir Diperbarui:** `2026-11-11` (Tahap akhir selesai: 11 varian × 3 quant, staging `-GGUF`, klon web, Ollama, laporan final; upload HF/Space menunggu izin pemilik)  
-> **Estimasi Progres Total:** **~92% Selesai** (seluruh deliverable lokal tuntas; sisa = publikasi remote + keputusan 400M base)  
+> **Terakhir Diperbarui:** `2026-11-11` (Tahap akhir selesai: 11 varian × 3 quant, staging `-GGUF`, klon web, Ollama, laporan final + retest fp32 400M base; upload HF diizinkan & dijalankan)  
+> **Estimasi Progres Total:** **~95% Selesai** (sisa hanya Space/deploy yang belum diizinkan)  
 > **Spesifikasi Rencana:** [INFERENCE_OPTIMIZATION_PLAN.md](INFERENCE_OPTIMIZATION_PLAN.md)  
 > **Konteks Detail & Diagnosis Sesi Sebelumnya:** [PREVIOUS_AGENT_SESSION.md](PREVIOUS_AGENT_SESSION.md)  
 > **Data Benchmark & Profiler:** [bench/RESULTS.md](bench/RESULTS.md)
@@ -77,7 +77,8 @@
   - **MoE `400M`:** **tidak lulus** (P1 cos 0.9686–0.9729, P3 router 87.9–88.8%, P4 TVD 0.082–0.172) akibat flip router pada near-tie ~0.01 (≈1 bf16 ulp) yang menumpuk dari layer 9 ke atas; bukan bug capacity dispatch (diverifikasi `stable_sort`, hasil identik sebelum/sesudah rebuild, juga gagal terhadap referensi fp32).
   - **Benchmark:** CPU `Q8_0` 103–327 tok/s (target ≥25 ✅, 15–30× Jalur A CPU); GPU dense 1.7–2.7× Jalur A; GPU 400M justru ~3× lebih lambat dari Jalur A (30–34 vs 105 tok/s) → rekomendasi pakai Jalur A untuk 400M GPU.
   - **Keputusan pemilik (2026-11-10):** kriteria khusus MoE **diterima**: median/mean cosine ≥0.99, top1 ≥95% (BF16/F16; Q8_0 dilaporkan), P3 ≥85% (dilaporkan), P4 dilaporkan. Hasil 400M BF16/F16 **lulus** (median cos 0.997, top1 100%/97.1%, P3 88.8%/88.4%); Q8_0 dilaporkan (top1 94.3%). README `-GGUF` 400M wajib menandai "numerically approximate, bukan bit-parity". Rencana menyebut P2 `Q8_0` sebagai laporan sedangkan `compare.py` masih menjadikannya blocker — dicatat, tidak diubah diam-diam.
-  - **8 varian sisa (2026-11-11):** 66M `instruct-v1/v2`, `base-v1/v2` dan 163M `instruct/base`, 400M `instruct/base` selesai diekspor/dikonversi/diuji/benchmark. Seluruh varian **dense** lulus (66M `instruct-v2` BF16 hanya `P2-defrep` 73.5 dengan `non_tie_divergences: []`, kategori tie bf16 yang sama dengan 163M; F16/Q8_0 lulus). 400M `instruct` lulus kriteria khusus pada median/top-1/P3, dengan mean cosine turun karena satu prompt `long_2048` (capacity-limited dispatch referensi). **400M `base` belum memenuhi kriteria** (top-1 BF16/F16 65.7%/60.0%, P3 72.0%/70.8%) meskipun median/mean cosine lulus; diagnosis: referensi bf16 itu sendiri tidak stabil (kesepakatan top-1 bf16-vs-fp32 hanya 40%, sedangkan kandidat 80%) — **menunggu keputusan pemilik**, README staging menandainya jangan dipublikasikan sebagai lulus.
+  - **8 varian sisa (2026-11-11):** 66M `instruct-v1/v2`, `base-v1/v2` dan 163M `instruct/base`, 400M `instruct/base` selesai diekspor/dikonversi/diuji/benchmark. Seluruh varian **dense** lulus (66M `instruct-v2` BF16 hanya `P2-defrep` 73.5 dengan `non_tie_divergences: []`, kategori tie bf16 yang sama dengan 163M; F16/Q8_0 lulus). 400M `instruct` lulus kriteria khusus pada median/top-1/P3, dengan mean cosine turun karena satu prompt `long_2048` (capacity-limited dispatch referensi).
+  - **Retest fp32 400M base (2026-11-11):** 35 prompt didump ulang sebagai referensi fp32 CPU penuh; `compare.py --device cpu` dijalankan ulang. Hasil BF16/F16: median cosine **0.99961/0.99986**, mean **0.99859/0.99871**, top-1 **85.71%/80.00%**, P3 **89.87%/90.44%**; Q8_0 dilaporkan (top-1 68.57%, P3 85.04%). Referensi bf16 sendiri hanya sepakat top-1 **57.14%** dengan fp32 (router 70.45%) — kandidat lebih dekat ke fp32 daripada referensi. P3 kini ✅ ≥85%, median/mean ✅, tetapi top-1 tetap di bawah 95% secara literal → status **eksperimental**, bukan "lulus"; README staging mencantumkan tabel retest dan catatan ini.
   - **Tokenizer:** 11 model × 35 prompt = **385/385 exact**.
 
 ---
@@ -95,7 +96,8 @@
 - [x] Diagnosa masalah startup Ollama lokal (`%LOCALAPPDATA%\Ollama\server.log`) & buat `Modelfile` untuk seluruh varian dense (`66M`, `163M`) di `scripts/ollama/` — 8 `Modelfile`, validasi greedy 8/8; diagnosis didokumentasikan di `scripts/ollama/README.md`.
 - [x] Finalisasi laporan komprehensif di `docs/bench/RESULTS.md` dan minta konfirmasi pemilik untuk langkah remote/Admin.
 
-### Tersisa — menunggu pemilik (bukan pekerjaan teknis)
-- [ ] Konfirmasi eksplisit untuk mengunggah 11 repo `-GGUF` ke HF Hub dan membuat/mendeploy Space.
-- [ ] Keputusan status publik **400M `base`** (README staging saat ini: jangan dipublikasikan sebagai lulus).
+### Tersisa — tindakan pemilik
+- [x] Izin eksplisit unggah 11 repo `-GGUF` ke HF Hub diberikan **2026-11-11**; unggah dijalankan.
+- [x] Status publik **400M `base`**: retest fp32 dijalankan → dipublikasikan sebagai **eksperimental** (top-1 tetap <95%, referensi bf16 terbukti tidak stabil).
+- [ ] Pembuatan/deploy Space **belum** diizinkan.
 - [ ] (Opsional) Jalankan skrip Administrator Intel DTT — hanya boleh oleh pemilik.
