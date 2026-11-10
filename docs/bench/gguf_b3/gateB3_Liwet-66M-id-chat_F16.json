@@ -1,0 +1,36 @@
+{
+  "model": "fadhilahkhairogi/Liwet-66M-id-chat",
+  "backend": "llamacpp",
+  "regime": "gguf_f16",
+  "P1_logit": {
+    "n": 35,
+    "min_cosine": 0.999875,
+    "mean_cosine": 0.999968,
+    "max_abs_diff": 0.08789,
+    "top1_match_pct": 100.0,
+    "passed": true
+  },
+  "P2_greedy_norep": {
+    "n": 6,
+    "exact_128_pct": 83.33,
+    "median_first_div": 128.0,
+    "min_first_div": 119,
+    "non_tie_divergences": [],
+    "passed": true
+  },
+  "P2_greedy_defrep": {
+    "n": 6,
+    "exact_128_pct": 66.67,
+    "median_first_div": 128.0,
+    "min_first_div": 4,
+    "non_tie_divergences": [],
+    "passed": true
+  },
+  "P3_router": null,
+  "P4_sampling": {
+    "max_tvd": 0.036,
+    "mean_tvd": 0.0132,
+    "passed": true
+  },
+  "ALL_PASSED": true
+}

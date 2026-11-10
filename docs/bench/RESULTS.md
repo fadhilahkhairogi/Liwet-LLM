@@ -156,3 +156,132 @@ Sumber: [gradio_overhead_track_a.json](gradio_overhead_track_a.json) (`bench_gra
 - MoE (`400M`): top1 100%, P2 exact 32/32, tokenizer identik, **P1b layer-wise MoE ≤ 1e-4 dengan router 100%** (diukur dengan memberi hidden state referensi yang identik ke tiap blok MoE HF), `P1 min cosine ≥ 0.999`, dan setiap divergensi end-to-end wajib terklasifikasi sebagai tie (celah selection logit < 1e-5). Hasil: worst layer-wise **3.05e-05** pada baris dengan magnitudo output MoE ~302 (≈1e-7 relatif, murni noise urutan GEMM fp32), router **100%**, satu-satunya divergensi end-to-end = tie 2.4e-7 yang terdokumentasi.
 
 **Implikasi untuk Jalur B (`B4`/Gate B3):** fork `llama.cpp` **wajib** mengimplementasikan dispatch capacity-limited yang sama agar prefill MoE cocok dengan referensi. Capacity dihitung dari total token pada satu forward; karena `llama.cpp` memecah prefill menjadi ubatch (`-ub`, default 512), prompt lebih panjang dari `n_ubatch` akan memakai capacity berbeda dan boleh divergen — dokumentasikan dan/atau set `-ub` ≥ panjang prompt saat benchmark paritas. Model dense tidak terpengaruh.
+
+---
+
+## Jalur B — Gate B3: Fork `llama.cpp`, Paritas GGUF & Benchmark
+
+**Build:** fork `E:\liwet_gguf_build\llama.cpp` branch `liwet-moe`, basis vendor `0c1e57098` + 3 commit lokal:
+- `9196caf89` — dispatch MoE capacity-limited (`ggml-cpu/ops.cpp` + `llama-graph.cpp`), KV baru `moe_capacity_factor` di GGUF, workflow CPU wheel.
+- `f003973d4` — `llama-eval-callback`: filter tensor via env (`LLAMA_DEBUG_CB_FILTER`) + opsi BOS untuk menangkap router MoE.
+- `cae551692` — capacity dispatch memakai `std::stable_sort` agar urutan keep per expert identik dengan `torch.argsort` (stable radix) di CUDA: assignment token-major.
+
+Binary CUDA `SM89` (`ARCHS=890`, CUDA 12.9 + MSVC 14.50, `-allow-unsupported-compiler`): `llama-cli`, `llama-server`, `llama-quantize`, `llama-tokenize`, `llama-bench`, `llama-eval-callback` (`build 11315, commit cae551692`). `llama-cpp-python 0.3.36` diarahkan ke fork lokal (`GGML_CUDA=on`, `CMAKE_CUDA_ARCHITECTURES=89`) → `E:\liwet_gguf_build\wheels\llama_cpp_python-0.3.36-py3-none-win_amd64.whl` (±87 MiB), terpasang dan GPU offload terverifikasi.
+
+### 1. Artefak GGUF & Paritas Tokenizer
+
+| Model | BF16 / F16 (byte) | Q8_0 (byte) | Tokenizer `llama-tokenize` |
+|---|---:|---:|---|
+| `Liwet-66M-id-chat` | 134,598,912 (128.4 MiB) | 72,051,552 (68.7 MiB) | 35/35 exact |
+| `Liwet-163M-id-chat` | 327,202,400 (312.0 MiB) | 174,401,120 (166.3 MiB) | 35/35 exact |
+| `Liwet-400M-A188M-id-chat` | 801,993,920 (764.8 MiB) | 515,683,520 (491.8 MiB) | 35/35 exact |
+
+Total **105/105 prompt exact** (100%) terhadap id `tokenizers` di dump referensi. Prompt `chat_role` membutuhkan BOS eksplisit karena GGUF menulis `add_bos_token=false`. Detail & perintah: [gguf_tokenizer_parity.txt](gguf_tokenizer_parity.txt).
+
+### 2. Metodologi Paritas (backend `llamacpp`)
+
+`scripts/parity/compare.py --backend llamacpp --regime gguf_{bf16,f16,q8_0}`:
+- **P1 (logit):** 35 prompt prefill, dibandingkan dengan logit referensi **bf16 CUDA** (`prefill_bf16_cuda.npz`) pada token terakhir → cosine, max abs, top1. `n_ctx` = `context_len` model, `n_batch = n_ubatch` = 1920 (163M/400M) atau 896 (66M) — yaitu panjang prompt terpanjang dibulatkan ke 32 — agar capacity MoE dihitung sekali per prompt.
+- **P2 (greedy 128):** 6 prompt × 128 token, `llama-cpp-python` (`n_gpu_layers=-1`, `logits_all=True`, `seed=0`), repetition penalty maksimum yang sama dengan referensi, argmax murni. Divergensi diklasifikasikan: **tie** bila celah top1–top2 referensi `< 0.05`, selain itu **non-tie** (dilaporkan beserta langkah & celahnya).
+- **P3 (router MoE):** `llama-eval-callback` menangkap tensor `ffn_moe_topk` per layer (env filter), dibandingkan sebagai **himpunan** expert referensi. Dua prompt `long_2048`/`long_1024` dikecualikan (tidak dapat dikirim sebagai teks karena melewati `n_ctx`) → 33 prompt × 32 layer = **1056 token-layer**.
+- **P4 (sampling):** 6 prompt × 500 seed, `temp 0.65`, `top-k 40`, `top-p 0.9` → histogram token, TVD maksimum.
+- **Koreksi penting P4:** dump referensi dibuat dengan `torch.multinomial` pada tensor **CUDA**. Sampling kandidat di CPU memakai RNG stream berbeda sehingga TVD naik sampai 0.112 hanya karena noise RNG. `_p4_sample_from_logits` sekarang memindahkan logits ke CUDA bila tersedia → kedua sisi memakai urutan angka acak yang sama, dan P4 mengukur fidelity logit (replay logits referensi sendiri memberi TVD 0.0).
+
+### 3. Hasil Paritas Dense (66M & 163M)
+
+| Model | Quant | P1 min cos / max abs / top1 | P2 norep exact / median / non-tie | P2 defrep exact / median / non-tie | P4 max TVD | `ALL_PASSED` |
+|---|---|---|---:|---:|---:|---|
+| `66M` | BF16 | 0.999863 / 0.0908 / 100% | 83.3% / 128 / — | 83.3% / 128 / — | 0.028 | ✅ |
+| `66M` | F16 | 0.999875 / 0.0879 / 100% | 83.3% / 128 / — | 66.7% / 128 / — | 0.036 | ✅ |
+| `66M` | Q8_0 | 0.999480 / 0.2102 / 100% | 83.3% / 128 / `chat_tags_mt_00@86` (0.0625) | 83.3% / 128 / `chat_tags_00@79` (0.0544) | 0.032 | ✅ |
+| `163M` | BF16 | 0.999973 / 0.1725 / 100% | 66.7% / 128 / `long_2048@22` (0.125), `chat_role_01@12` (0.0625) | 16.7% / **33.5** / `chat_role_01@12` (0.0625) | 0.016 | ❌ (P2d) |
+| `163M` | F16 | 0.999974 / 0.1602 / 100% | 66.7% / 128 / idem | 16.7% / **33.5** / idem | 0.036 | ❌ (P2d) |
+| `163M` | Q8_0 | 0.999819 / 0.3181 / 100% | 50.0% / 87.5 / `chat_role_26@47`, `chat_role_01@12` (0.0625) | 0.0% / **26.5** / `mt_00@25` (0.0679), `chat_role_01@12` (0.0625) | 0.048 | ❌ (P2d) |
+
+Artefak: [gguf_b3/](gguf_b3/) (`gateB3_Liwet-{66M,163M}-id-chat_{BF16,F16,Q8_0}.json`; salinan mentah di `E:\liwet_gguf_build\scratch\`).
+
+**Interpretasi dense:** P1 lulus dengan margin besar (cos ≥0.9995, top1 100%), P4 ≤0.048 di semua kombinasi. P2 selalu gagal hanya pada prompt-prompt yang di lintasan referensinya sendiri mengandung **tie/near-tie bf16** — statistik `logit_gaps` referensi (768 langkah greedy):
+
+| Model | Trace | celah = 0 | celah < 0.05 | celah ≤ 0.0625 (1 bf16 ulp) |
+|---|---|---:|---:|---:|
+| 66M | norep | 5 | 1 | 10 |
+| 66M | defrep | 2 | 2 | 10 |
+| 163M | norep | 5 | 0 | 18 |
+| 163M | defrep | 9 | 9 | 26 |
+| 400M | norep | 11 | 1 | 11 |
+| 400M | defrep | 6 | 10 | 27 |
+
+Kandidat f32 `llama.cpp` memiliki galat hingga ~0.17 pada logit, yaitu **lebih besar dari 1 bf16 ulp** (0.0625 pada magnitudo ~10). Karena itu tie bf16 referensi tidak dapat direproduksi oleh runtime independen mana pun: argmax bisa memilih token yang berbeda walau kedua logit secara matematis sama. Eksperimen membulatkan logits kandidat ke grid bf16 sebelum argmax sempat dicoba, tetapi justru memperburuk `163M norep` (dari 100% → 33.3% exact) karena galat f32 > 1 ulp — jadi dibatalkan dan kandidat tetap f32 jujur. **Median ≥96 pada 163M defrep tidak tercapai** (33.5), tetapi seluruh divergensinya berada pada celah referensi ≤0.0625; tidak ada bukti kesalahan implementasi. Hal serupa yang lebih ringan terlihat di Q8_0.
+
+Catatan kebijakan: rencana menyatakan P2 untuk **Q8_0 dilaporkan, bukan blocker**, sedangkan `compare.py` saat ini tetap menegakkan ambang Q8_0 (set ≥97%, median ≥48) sehingga `ALL_PASSED=false`. Perbedaan definisi ini dicatat, bukan diubah diam-diam.
+
+### 4. Hasil Paritas MoE (`Liwet-400M-A188M-id-chat`) — **TIDAK LULUS**
+
+| Quant | P1 min cos / mean / max abs / top1 | P2 norep exact / median | P2 defrep exact / median | P3 router | P4 max TVD | `ALL_PASSED` |
+|---|---|---|---:|---:|---:|---:|---|
+| BF16 | **0.970377** / 0.995388 / 1.964 / 100% | 16.7% / **6** | 0.0% / **3.5** | **88.826%** | **0.094** | ❌ |
+| F16 | **0.972936** / 0.995441 / 2.047 / 97.14% | 16.7% / **6** | 0.0% / **3.5** | **88.352%** | **0.082** | ❌ |
+| Q8_0 | **0.968586** / 0.994333 / 2.833 / 94.29% | 16.7% / 28 | 0.0% / **9** | **87.879%** | **0.172** | ❌ |
+
+Artefak: [gguf_b3/](gguf_b3/) (`gateB3_Liwet-400M-A188M-id-chat_{BF16,F16,Q8_0}.json`). Hasil **identik** sebelum dan sesudah binary dibangun ulang di `cae551692`, jadi bukan artefak binary lama.
+
+**Diagnosis (bukan bug dispatch):** dispatch capacity sudah diverifikasi semantik-identik dengan referensi (`stable_sort` → keep token-major per expert; capacity `ceil(n_tokens·k/E·1.25)`; `n_ubatch` = panjang prompt sehingga capacity dihitung sekali). Penyebab divergensi adalah **kegagalan router pada near-tie bf16**:
+- Layer awal cocok; flip mulai sekitar layer 9 dan menumpuk. Contoh string match per layer (`chat_role_00`): `11111111101001111111111111100111` (28/32 layer).
+- Contoh konkret layer 9: kandidat memberi nilai selection `[-1.1426 (exp 4), -1.1959 (exp 4), -1.2048 (exp 7) …]`, referensi memilih `[0, 7]`. Expert 4 vs 7 hanya berbeda **~0.0089 ≈ 1 bf16 ulp** pada magnitudo 1.2.
+- Membulatkan `ffn_moe_probs_biased` ke grid bf16 secara offline memberi jumlah layer cocok yang sama (28/32) → pembulatan tidak menyelamatkan; selisih f32 vs bf16 sudah mengubah urutan sebelum pembulatan.
+- Mengganti referensi ke dump **fp32 CPU** juga tidak lulus: cos min **0.9411** (`long_2048`), mean 0.9875, top1 100% pada 10 prompt.
+- KV cache f32 (`type_k=type_v=0`) hanya menaikkan P1 5 prompt dari 0.9927 → 0.9945; tetap jauh dari 0.999.
+
+Rantai sebab: satu flip router mengubah campuran expert → hidden state bergeser → layer berikutnya makin banyak near-tie yang terbalik → drift kumulatif 32 layer. Inilah yang menurunkan P1/P3/P4, bukan kesalahan konversi atau dispatch. Karena celah selection-nya ~1 ulp bf16, hasil ini **inheren** untuk runtime f32 independen dan tidak bisa diperbaiki dengan tuning threshold numerik kecil.
+
+**Implikasi:** gate paritas MoE perlu kriteria khusus MoE (mis. P1 cos ≥0.99 + top1 ≥95% + P3 ≥85% dilaporkan; P1 layer-wise `ffn_moe_probs_biased` ≤1e-3 dengan router ≥99%), atau jalur compute bf16 di llama.cpp. Sampai itu diputuskan, klaim "GGUF 400M setara referensi secara numerik" **tidak boleh** dibuat; secara kualitatif output tetap terbaca dan top1 masih 94–100%.
+
+### 5. Benchmark `llama-bench` (`commit cae551692`, build 11315)
+
+GPU `-ngl 99`, 5 rep (pp512 + tg128); angka tg 400M dari run stabilitas 8 rep karena run 5 rep mengalami outlier throttle (lihat catatan).
+
+| Model | Quant | Prefill 512 (tok/s) | Decode 128 (tok/s) | Decode terbaik vs Jalur A |
+|---|---|---:|---:|---|
+| `66M` | BF16 | 41,987 ± 5,799 | 672 ± 64 | ×1.75 |
+| `66M` | F16 | 58,330 ± 13,530 | 649 ± 25 | ×1.69 |
+| `66M` | Q8_0 | 51,596 ± 8,529 | **898 ± 34** | ×2.34 |
+| `163M` | BF16 | 30,600 ± 4,553 | 397 ± 1 | ×1.94 |
+| `163M` | F16 | 32,577 ± 6,592 | 390 ± 7 | ×1.91 |
+| `163M` | Q8_0 | 36,629 ± 5,629 | **559 ± 25** | ×2.74 |
+| `400M` | BF16 | 7,157 ± 131 | 29.6 ± 1.3 | **×0.28** |
+| `400M` | F16 | 5,652 ± 202 | 25.8 ± 0.8 | ×0.25 |
+| `400M` | Q8_0 | 8,570 ± 641 | **33.6 ± 0.7** | **×0.32** |
+
+CPU `-ngl 0 -t 8`, tg32, run stabilitas 8 rep (Q8_0):
+
+| Model | Decode CPU Q8_0 (tok/s, median) | Target ≥25 | vs Jalur A CPU (`fp32`) |
+|---|---:|---|---:|
+| `66M` | **326.8** | ✅ | ×6.7 (48.46) |
+| `163M` | **155.7** | ✅ | ×21.5 (7.22) |
+| `400M` | **103.2** | ✅ | ×30.2 (3.42) |
+
+CPU BF16 (3 rep, informatif): 66M 152.8 ± 31.1, 163M 75.2 ± 19.2, 400M 27.1 ± 11.4 tok/s.
+
+**Catatan stabilitas:** run 5 rep pada 400M GPU sempat menghasilkan sampel liar (`28.7 → 1.8 tok/s`) tanpa proses lain; run 8 rep berikutnya stabil (sd ≤1.3). Rep pertama juga sering jauh lebih lambat (warm-up/page-in). Karena itu decode dilaporkan dari run stabilitas, dan angka absolut GPU adalah **batas bawah** selama Intel DTT aktif: pengamatan `nvidia-smi` selama decode menunjukkan clock SM median ~0.8 GHz (maks 1.6 GHz) dari batas 3.1 GHz, sementara Jalur A terukur ~2.37 GHz. Pemilik perlu menjalankan skrip DTT (Administrator) untuk angka puncak.
+
+**Interpretasi produk:**
+- **CPU:** GGUF `Q8_0` memenuhi target ≥25 tok/s dengan margin besar (103–327 tok/s), **15–30× lebih cepat** dari jalur PyTorch CPU. Ini kemenangan utama Jalur B.
+- **GPU dense:** llama.cpp 1.7–2.7× lebih cepat dari Jalur A pada decode, dan 1.4–2.2× pada prefill → kandidat kuat untuk 66M/163M.
+- **GPU 400M (MoE):** llama.cpp justru ~3× **lebih lambat** dari Jalur A CUDA-graph (30–34 vs 105 tok/s). Rekomendasi: tetap pakai Jalur A (PyTorch fastpath) untuk 400M di GPU; GGUF 400M dipakai untuk CPU/server tanpa PyTorch.
+
+### 6. Verdict Gate B3
+
+| Kriteria | Hasil | Status |
+|---|---|---|
+| Tokenizer 105/105 exact | 105/105 | ✅ |
+| Fork build CUDA SM89 + wheel terpasang | build 11315 `cae551692`, wheel ±87 MiB | ✅ |
+| Dense 66M P1/P2/P4 | cos ≥0.9994, top1 100%, P2 median 128, TVD ≤0.036 | ✅ |
+| Dense 163M P1/P4 | cos ≥0.9999, top1 100%, TVD ≤0.036 | ✅ |
+| Dense 163M P2-defrep median ≥96 | 33.5; semua divergensi pada celah referensi ≤0.0625 | ⚠️ (tie bf16, terdokumentasi) |
+| MoE 400M P1 cos ≥0.999 | 0.9686–0.9729 | ❌ (near-tie router) |
+| MoE 400M P3 ≥99.5% | 87.9–88.8% | ❌ (hulu dari P1) |
+| MoE 400M P4 TVD ≤0.05 | 0.082–0.172 | ❌ (hulu dari P1) |
+| CPU Q8_0 ≥25 tok/s | 103–327 tok/s | ✅ |
+| GPU decode Jalur B | dense ×1.7–2.7 vs Jalur A; 400M ×0.3 | ✅ dense / ⚠️ MoE |
+
+**Kesimpulan:** Gate B3 **lulus untuk dense 66M** dan **lulus P1/P4 untuk 163M**, tetapi **tidak lulus penuh**: (a) P2 163M defrep jatuh karena tie bf16 referensi; (b) seluruh metrik paritas 400M MoE gagal akibat near-tie router yang inheren. Keduanya dianalisis dan didokumentasikan, bukan disembunyikan. Artefak mentah ada di [gguf_b3/](gguf_b3/) (`gateB3_*.json`, `bench_final_*.json`, `bench_stab_*.json`; salinan asli di `E:\liwet_gguf_build\scratch\`).

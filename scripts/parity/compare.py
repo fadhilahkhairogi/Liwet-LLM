@@ -5,6 +5,7 @@ import argparse
 import gc
 import json
 import os
+import re
 import statistics
 import sys
 from collections import Counter
@@ -281,13 +282,191 @@ def _torch_greedy_fallback(bundle, prompt_ids: List[int], steps: int, rep_penalt
     return toks
 
 
+def _p4_sample_from_logits(logits: "torch.Tensor") -> List[int]:
+    """Mirror the reference sampler (temp 0.65, top-k 40, top-p 0.9) over 500 seeds.
+
+    The reference dumps were produced with `torch.multinomial` on a CUDA tensor, whose
+    RNG stream differs from the CPU one. Draw on CUDA too when available so both sides
+    consume the same random numbers and P4 measures logit fidelity, not RNG noise.
+    """
+    dev = logits.device
+    if dev.type == "cpu" and torch.cuda.is_available():
+        dev = torch.device("cuda")
+    s500 = []
+    for seed in range(500):
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        temp = 0.65
+        lg = logits.to(dev) / temp
+        kth = torch.topk(lg, 40, dim=-1).values[:, -1:]
+        lg = lg.masked_fill(lg < kth, float("-inf"))
+        sl, si = torch.sort(lg, descending=True, dim=-1)
+        sp = torch.softmax(sl, dim=-1)
+        rem = sp.cumsum(dim=-1) - sp > 0.9
+        sl = sl.masked_fill(rem, float("-inf"))
+        lg = torch.full_like(lg, float("-inf")).scatter(-1, si, sl)
+        s500.append(int(torch.multinomial(torch.softmax(lg, dim=-1), 1).item()))
+    return s500
+
+
+def _run_llamacpp_candidate(
+    gguf_path: Path,
+    ref_dir: Path,
+    greedy_ids_order: List[str],
+    prefill_ids_order: Optional[List[str]] = None,
+    p4_ids_order: Optional[List[str]] = None,
+) -> dict:
+    """Candidate logits/tokens from llama-cpp-python built against the Liwet fork."""
+    from llama_cpp import Llama
+
+    meta = json.loads((ref_dir / "meta.json").read_text(encoding="utf-8"))
+    prompts = meta["prompts"]
+    by_id = {p["id"]: p for p in prompts}
+    prompts_prefill = [by_id[pid] for pid in prefill_ids_order] if prefill_ids_order is not None else prompts
+    prompts_greedy = [by_id[pid] for pid in greedy_ids_order]
+    p4_target_ids = list(p4_ids_order) if p4_ids_order is not None else [p["id"] for p in prompts[:5]]
+    p4_set = set(p4_target_ids)
+
+    n_ctx = int(meta["context_len"])
+    max_len = max(len(p["ids"]) for p in prompts_prefill)
+    n_batch = max(512, ((max_len + 31) // 32) * 32)
+    llm = Llama(
+        model_path=str(gguf_path),
+        n_gpu_layers=-1,
+        n_ctx=n_ctx,
+        n_batch=n_batch,
+        n_ubatch=n_batch,
+        logits_all=True,
+        verbose=False,
+        seed=0,
+    )
+
+    def eval_prompt(ids: List[int]):
+        llm.reset()
+        llm.eval(ids)
+        return np.asarray(llm.scores[len(ids) - 1, :], dtype=np.float32).copy()
+
+    prefill_logits = []
+    logits_by_id: Dict[str, np.ndarray] = {}
+    for pm in prompts_prefill:
+        lg = eval_prompt(pm["ids"])
+        prefill_logits.append(lg)
+        if pm["id"] in p4_set:
+            logits_by_id[pm["id"]] = lg
+
+    p4_samples = []
+    for pid in p4_target_ids:
+        lg_np = logits_by_id.get(pid)
+        if lg_np is None:
+            lg_np = eval_prompt(by_id[pid]["ids"])
+            logits_by_id[pid] = lg_np
+        p4_samples.append(_p4_sample_from_logits(torch.from_numpy(lg_np).unsqueeze(0)))
+
+    def run_greedy(ids: List[int], rep_penalty: float, steps: int = 128) -> List[int]:
+        llm.reset()
+        llm.eval(ids)
+        seen = list(ids)
+        toks: List[int] = []
+        for s in range(steps):
+            adj = np.asarray(llm.scores[len(seen) - 1, :], dtype=np.float32).copy()
+            if rep_penalty != 1.0:
+                for u in np.unique(np.asarray(seen, dtype=np.int64)):
+                    v = adj[u]
+                    adj[u] = v / rep_penalty if v > 0 else v * rep_penalty
+            tok = int(np.argmax(adj))
+            toks.append(tok)
+            seen.append(tok)
+            if s + 1 < steps:
+                llm.eval([tok])
+        return toks
+
+    def_rep = float(meta["recommended_params"].get("repetition_penalty", 1.1))
+    greedy_norep = [run_greedy(by_id[pid]["ids"], 1.0) for pid in greedy_ids_order]
+    greedy_defrep = [run_greedy(by_id[pid]["ids"], def_rep) for pid in greedy_ids_order]
+
+    del llm
+    gc.collect()
+
+    return {
+        "prefill_logits": np.stack(prefill_logits, axis=0),
+        "prefill_experts": np.empty((0,), dtype=np.int32),
+        "greedy_norep": greedy_norep,
+        "greedy_defrep": greedy_defrep,
+        "p4_samples": p4_samples,
+    }
+
+
+_TOP_K_HEADER = re.compile(r"ffn_moe_topk-\d+ = \(i32\).*?= \{(\d+), (\d+), (\d+), (\d+)\}")
+
+
+def _dump_experts_via_eval_callback(
+    eval_bin: Path,
+    gguf_path: Path,
+    prompts: List[dict],
+    n_ctx: int,
+    n_ubatch: int,
+    scratch_dir: Path,
+    add_bos: bool = True,
+) -> np.ndarray:
+    """Run llama-eval-callback per prompt and parse ffn_moe_topk -> [P, L, K] last-token experts."""
+    import subprocess
+    import tempfile
+
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env["LLAMA_DEBUG_CB_FILTER"] = "ffn_moe_topk"
+    env["LLAMA_DEBUG_CB_LIMIT"] = "100000"
+    if add_bos:
+        env["LLAMA_EVAL_CALLBACK_ADD_BOS"] = "1"
+
+    out_all: List[np.ndarray] = []
+    for pm in prompts:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="\n",
+                                         suffix=".txt", dir=str(scratch_dir), delete=False) as f:
+            f.write(pm["formatted"])
+            prompt_path = f.name
+        cmd = [
+            str(eval_bin), "-m", str(gguf_path), "-f", prompt_path, "--no-escape",
+            "-c", str(n_ctx), "-b", str(n_ubatch), "-ub", str(n_ubatch), "-ngl", "99",
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+        Path(prompt_path).unlink(missing_ok=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"eval-callback failed for {pm['id']}: {res.stderr[-2000:]}")
+
+        lines = (res.stdout + "\n" + res.stderr).splitlines()
+        per_layer: List[np.ndarray] = []
+        i = 0
+        while i < len(lines):
+            m = _TOP_K_HEADER.search(lines[i])
+            i += 1
+            if not m:
+                continue
+            ne0, ne1 = int(m.group(1)), int(m.group(2))
+            vals: List[float] = []
+            while i < len(lines) and "sum =" not in lines[i]:
+                for tok in re.findall(r"-?\d+\.\d+", lines[i]):
+                    vals.append(float(tok))
+                i += 1
+            if len(vals) != ne0 * ne1:
+                raise RuntimeError(f"{pm['id']}: expected {ne0 * ne1} top-k values, got {len(vals)}")
+            arr = np.asarray(vals, dtype=np.float64).reshape(ne1, ne0)  # [tokens, top_k]
+            per_layer.append(np.rint(arr[-1, :]).astype(np.int32))
+        out_all.append(np.stack(per_layer, axis=0))
+    return np.stack(out_all, axis=0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
-    parser.add_argument("--backend", default="torch_fast", choices=["torch_fast"])
+    parser.add_argument("--backend", default="torch_fast", choices=["torch_fast", "llamacpp"])
     parser.add_argument("--regime", default="same_dtype", choices=["same_dtype", "gguf_bf16", "gguf_f16", "gguf_q8_0"])
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", default="auto")
+    parser.add_argument("--gguf", default="", help="GGUF path (llamacpp backend)")
+    parser.add_argument("--eval-callback-bin", default=r"E:\liwet_gguf_build\llama.cpp\build\bin\llama-eval-callback.exe")
+    parser.add_argument("--p3-scratch", default=r"E:\liwet_gguf_build\parity_llamacpp")
     parser.add_argument("--ref-root", default=str(DEFAULT_REF_ROOT))
     parser.add_argument("--local-dir", default=str(DEFAULT_LOCAL_MODELS))
     parser.add_argument("--out", default="")
@@ -317,6 +496,16 @@ def main() -> None:
             prefill_ids_order=prefill_ids_order,
             p4_ids_order=p4_ids_order,
         )
+    elif args.backend == "llamacpp":
+        if not args.gguf:
+            raise SystemExit("--gguf is required for the llamacpp backend")
+        cand = _run_llamacpp_candidate(
+            Path(args.gguf),
+            ref_dir,
+            greedy_ids_order=greedy_ids_order,
+            prefill_ids_order=prefill_ids_order,
+            p4_ids_order=p4_ids_order,
+        )
     else:
         raise NotImplementedError(args.backend)
 
@@ -324,8 +513,27 @@ def main() -> None:
     p1 = _eval_p1(ref_logits_target, cand["prefill_logits"], args.regime)
     p2_norep = _eval_p2(ref_greedy_norep, cand["greedy_norep"], args.regime)
     p2_defrep = _eval_p2(ref_greedy_defrep, cand["greedy_defrep"], args.regime)
+
     ref_experts_target = ref_fp32["moe_experts"] if (args.device == "cpu" and "moe_experts" in ref_fp32) else ref_bf16["moe_experts"]
-    p3 = _eval_p3(ref_experts_target, cand["prefill_experts"], args.regime) if ref_experts_target.size > 0 else None
+    cand_experts = cand["prefill_experts"]
+    if args.backend == "llamacpp" and ref_experts_target.size > 0:
+        # The two >ctx "long" prompts cannot be fed to llama.cpp as text (the reference
+        # truncates the token tail instead); P3 compares the remaining prompts only.
+        meta = json.loads((ref_dir / "meta.json").read_text(encoding="utf-8"))
+        prompts = meta["prompts"]
+        keep = [i for i, p in enumerate(prompts) if "long_2048" not in p["id"] and "long_1024" not in p["id"]]
+        p3_prompts = [prompts[i] for i in keep]
+        cand_experts = _dump_experts_via_eval_callback(
+            Path(args.eval_callback_bin),
+            Path(args.gguf),
+            p3_prompts,
+            int(meta["context_len"]),
+            2048,
+            Path(args.p3_scratch),
+            add_bos=meta["prompt_mode"] in {"raw_bos", "chat_role"},
+        )
+        ref_experts_target = ref_experts_target[keep]
+    p3 = _eval_p3(ref_experts_target, cand_experts, args.regime) if ref_experts_target.size > 0 else None
 
     tvds = [_tvd(ref_p4["samples"][i].tolist(), cand["p4_samples"][i]) for i in range(len(cand["p4_samples"]))]
     p4 = {

@@ -1,0 +1,10 @@
+B4 tokenizer parity — llama-tokenize.exe (fork llama.cpp, commit cae551692) vs reference `tokenizers` ids
+in E:\liwet_gguf_build\parity_ref\<model>\meta.json, over all 35 prompts of scripts/parity/prompts.jsonl.
+Command: python E:\liwet_gguf_build\scratch\tokenize_parity.py   (2026-11-10, GGUF Q8_0 per model)
+
+Liwet-66M-id-chat: 35/35 exact [PASS]
+Liwet-163M-id-chat: 35/35 exact [PASS]
+Liwet-400M-A188M-id-chat: 35/35 exact [PASS]
+
+Total: 105/105 prompts exact (100%). chat_role prompts require an explicit BOS prepend because the
+GGUF tokenizer config has add_bos_token=false while the reference dumps always prepend BOS.
