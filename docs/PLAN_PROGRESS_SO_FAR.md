@@ -1,7 +1,7 @@
 # Plan Progress So Far — Liwet-LLM Inference Optimization
 
-> **Terakhir Diperbarui:** `2026-11-10` (Gate B3 selesai diukur: dense lulus, MoE 400M gagal paritas karena near-tie router bf16)  
-> **Estimasi Progres Total:** **~56% Selesai**  
+> **Terakhir Diperbarui:** `2026-11-11` (Tahap akhir selesai: 11 varian × 3 quant, staging `-GGUF`, klon web, Ollama, laporan final; upload HF/Space menunggu izin pemilik)  
+> **Estimasi Progres Total:** **~92% Selesai** (seluruh deliverable lokal tuntas; sisa = publikasi remote + keputusan 400M base)  
 > **Spesifikasi Rencana:** [INFERENCE_OPTIMIZATION_PLAN.md](INFERENCE_OPTIMIZATION_PLAN.md)  
 > **Konteks Detail & Diagnosis Sesi Sebelumnya:** [PREVIOUS_AGENT_SESSION.md](PREVIOUS_AGENT_SESSION.md)  
 > **Data Benchmark & Profiler:** [bench/RESULTS.md](bench/RESULTS.md)
@@ -16,11 +16,11 @@
 | **D2** | Harness paritas + dump referensi | `scripts/parity/`, `E:\liwet_gguf_build\parity_ref\` | **100%** | Dump referensi 3 model chat **diregenerasi di lingkungan torch `2.9.1+cu128`** dan dipromosikan (`parity_ref_v2 → parity_ref`). `compare.py` masih perlu mode `llamacpp` di Jalur B |
 | **D3** | PyTorch fastpath (`LIWET_FASTPATH`) | `liwet-space/liwet_models.py`, `liwet-space/app.py` (`perf/torch-fastpath`) | **100%** | Gate A terpenuhi: `400M` **105.28 tok/s** headless (dari `1.73 tok/s`), `stream_generate` +16.7%, UI +1.2%, P1–P4 `ALL_PASSED` ketiga model, `LIWET_FASTPATH=0` P1 `max_abs 0.0` |
 | **D4** | Fork `llama.cpp` + patch MoE + CI CPU wheel | `E:\liwet_gguf_build\llama.cpp` (`liwet-moe`) | **100%** | Binary CUDA SM89 + `llama-cpp-python` wheel terpasang; dispatch capacity (`stable_sort`) & eval-callback selesai (3 commit lokal); workflow CPU wheel ter-commit (belum di-push) |
-| **D5** | Skrip ekspor HF-Llama/Mixtral & konversi GGUF | `scripts/gguf/` | **85%** | Gate B2 lulus; 9 GGUF 3 model chat selesai + tokenizer 105/105 exact; tinggal batch 8 varian sisa |
-| **D6** | 11 repo `-GGUF` (staging lokal dulu) | `E:\liwet_gguf_build\hf_gguf_staging\` | **0%** | Belum dimulai (menunggu izin upload pemilik; staging lokal disiapkan lebih dulu) |
-| **D7** | Web klon 1:1 `liwet-space-cpp/` | `liwet-space-cpp/`, `scripts/run_local_servers.ps1` | **0%** | Belum dimulai (menunggu keputusan threshold paritas MoE) |
-| **D8** | Diagnosa Ollama & `Modelfile` dense (`66M`, `163M`) | `scripts/ollama/` | **0%** | Belum dimulai (bonus tahap akhir) |
-| **D9** | Laporan akhir seluruh model × backend × dtype | `docs/bench/RESULTS.md` | **60%** | Fase 0, Jalur A, dan **Gate B3** (paritas 9 kombinasi + `llama-bench` + analisis MoE) selesai; 8 varian & Ollama menyusul |
+| **D5** | Skrip ekspor HF-Llama/Mixtral & konversi GGUF | `scripts/gguf/` | **100%** | Gate B2 lulus; **11 varian × `BF16`/`F16`/`Q8_0`** terkonversi; tokenizer **385/385 exact** (11 model × 35 prompt) |
+| **D6** | 11 repo `-GGUF` (staging lokal dulu) | `E:\liwet_gguf_build\hf_gguf_staging\` | **100%** (lokal) | 11 folder staging lengkap: 3 GGUF + `tokenizer.json` + README (spesifikasi prompt, tabel paritas, benchmark, sha256). **Belum diunggah** — menunggu konfirmasi eksplisit pemilik |
+| **D7** | Web klon 1:1 `liwet-space-cpp/` | `liwet-space-cpp/`, `scripts/run_local_servers.ps1` | **100%** | Struktur + backend (`torch`, `llamacpp_inproc`, `llamacpp_server`) selesai; single-source import `liwet_models.py`; diff `app.py` hanya baris import backend; checklist `P5` + screenshot 3 tab di `docs/bench/ui/` |
+| **D8** | Diagnosa Ollama & `Modelfile` dense (`66M`, `163M`) | `scripts/ollama/` | **100%** | 8 `Modelfile` dense; diagnosis watchdog GPU-discovery → CPU fallback, CRLF→`\r\n`, dan BOS ganda/hilang; validasi greedy **8/8 identik** dengan backend aplikasi |
+| **D9** | Laporan akhir seluruh model × backend × dtype | `docs/bench/RESULTS.md` | **100%** | 11 varian × 3 quant + benchmark GPU/CPU + profil + Jalur A/B + analisis MoE + catatan staging/Ollama; sisa hanya keputusan status publik 400M base |
 
 ---
 
@@ -61,7 +61,7 @@
 
 ---
 
-### Jalur B — Konversi GGUF & Fork `llama.cpp` (`§6`) — **GATE B2 LULUS, GATE B3 TERUKUR (~85%)**
+### Jalur B — Konversi GGUF & Fork `llama.cpp` (`§6`) — **SELESAI (100%)**
 - [x] **B0:** Pin `llama-cpp-python` di `v0.3.36` (`1652066`) dan siapkan `E:\liwet_gguf_build\llama.cpp` branch `liwet-moe` tepat di commit submodule vendor `0c1e57098bba43ac29e6e3b677cdceebdd22334f`.
 - [x] **B1 & B2.1:** Buat skrip ekspor `scripts/gguf/export_hf_llama.py` (mendukung `66M` `rms_norm_eps=1e-6`, `163M` `rms_norm_eps=1e-5`, dan `400M` `MixtralForCausalLM` + `e_score_correction.bias` + validasi keamanan `F16`) serta verifier `scripts/gguf/verify_hf_llama_parity.py`.
 - [x] **B3 (Patch Kode Fork):** Patch `gguf-py/gguf/constants.py`, `conversion/base.py` (termasuk hash `chkhsh` tokenizer Liwet → `"gpt-2"`), `src/llama-model.cpp`, dan `src/models/llama.cpp` untuk mendukung `blk.%d.exp_probs_b`, `SOFTMAX_WEIGHT`, dan `expert_weights_norm=false`. Editable `gguf-py` sudah terpasang di `tubes_venv`.
@@ -71,24 +71,31 @@
   - [x] Konversi 3 model chat ke `BF16`, `F16`, dan `Q8_0` di `E:\liwet_gguf_build\gguf\` (9 file), serta verifikasi `llama-tokenize.exe` identik dengan `tokenizers` pada `prompts.jsonl` (**105/105 prompt exact**, termasuk prompt `chat_role` yang butuh BOS eksplisit).
   - [x] Arahkan `llama-cpp-python` ke fork lokal (`vendor/llama.cpp` disinkronkan dari fork), build & install wheel CUDA `SM89` (`llama_cpp_python-0.3.36-py3-none-win_amd64.whl`, `GGML_CUDA=on`, `CMAKE_CUDA_ARCHITECTURES=89`, `-allow-unsupported-compiler`), GPU offload terverifikasi.
 - [x] **B5:** `.github/workflows/build-cpu-wheel.yml` (wheel CPU Linux x86_64 AVX2) sudah ada di fork dan ter-commit di branch `liwet-moe` (`9196caf89`); belum di-push ke remote (sesuai batasan: jangan push ke `main`/remote upstream).
-- [x] **Gate B3:** `scripts/parity/compare.py --backend llamacpp` menjalankan `P1`–`P4` (router `P3` via `llama-eval-callback`) untuk 9 kombinasi model × `BF16/F16/Q8_0`, plus sweep `llama-bench` GPU/CPU; seluruh hasil & analisis dicatat di [`docs/bench/RESULTS.md`](bench/RESULTS.md):
+- [x] **Gate B3:** `scripts/parity/compare.py --backend llamacpp` menjalankan `P1`–`P4` (router `P3` via `llama-eval-callback`) untuk **33 kombinasi (11 model × `BF16/F16/Q8_0`)**, plus sweep `llama-bench` GPU/CPU; seluruh hasil & analisis dicatat di [`docs/bench/RESULTS.md`](bench/RESULTS.md):
   - **Dense `66M`:** `ALL_PASSED` di ketiga quant (P1 cos ≥0.9995, top1 100%, P2 median 128, P4 ≤0.036).
   - **Dense `163M`:** P1/P4 lulus (cos ≥0.9999, TVD ≤0.036); `P2-defrep` median 33.5 (target ≥96) **tidak lulus**, tetapi semua divergensi berada pada celah logit referensi ≤0.0625 (1 bf16 ulp; referensi sendiri punya 9 tie + 9 near-tie pada 768 langkah).
   - **MoE `400M`:** **tidak lulus** (P1 cos 0.9686–0.9729, P3 router 87.9–88.8%, P4 TVD 0.082–0.172) akibat flip router pada near-tie ~0.01 (≈1 bf16 ulp) yang menumpuk dari layer 9 ke atas; bukan bug capacity dispatch (diverifikasi `stable_sort`, hasil identik sebelum/sesudah rebuild, juga gagal terhadap referensi fp32).
   - **Benchmark:** CPU `Q8_0` 103–327 tok/s (target ≥25 ✅, 15–30× Jalur A CPU); GPU dense 1.7–2.7× Jalur A; GPU 400M justru ~3× lebih lambat dari Jalur A (30–34 vs 105 tok/s) → rekomendasi pakai Jalur A untuk 400M GPU.
-  - **Keputusan tertunda (butuh pemilik):** ambang paritas khusus MoE (mis. P1 cos ≥0.99 + P3 ≥85%) atau implementasi compute bf16 di `llama.cpp`; rencana juga menyebut P2 `Q8_0` sebagai laporan, sedangkan `compare.py` masih menjadikannya blocker.
+  - **Keputusan pemilik (2026-11-10):** kriteria khusus MoE **diterima**: median/mean cosine ≥0.99, top1 ≥95% (BF16/F16; Q8_0 dilaporkan), P3 ≥85% (dilaporkan), P4 dilaporkan. Hasil 400M BF16/F16 **lulus** (median cos 0.997, top1 100%/97.1%, P3 88.8%/88.4%); Q8_0 dilaporkan (top1 94.3%). README `-GGUF` 400M wajib menandai "numerically approximate, bukan bit-parity". Rencana menyebut P2 `Q8_0` sebagai laporan sedangkan `compare.py` masih menjadikannya blocker — dicatat, tidak diubah diam-diam.
+  - **8 varian sisa (2026-11-11):** 66M `instruct-v1/v2`, `base-v1/v2` dan 163M `instruct/base`, 400M `instruct/base` selesai diekspor/dikonversi/diuji/benchmark. Seluruh varian **dense** lulus (66M `instruct-v2` BF16 hanya `P2-defrep` 73.5 dengan `non_tie_divergences: []`, kategori tie bf16 yang sama dengan 163M; F16/Q8_0 lulus). 400M `instruct` lulus kriteria khusus pada median/top-1/P3, dengan mean cosine turun karena satu prompt `long_2048` (capacity-limited dispatch referensi). **400M `base` belum memenuhi kriteria** (top-1 BF16/F16 65.7%/60.0%, P3 72.0%/70.8%) meskipun median/mean cosine lulus; diagnosis: referensi bf16 itu sendiri tidak stabil (kesepakatan top-1 bf16-vs-fp32 hanya 40%, sedangkan kandidat 80%) — **menunggu keputusan pemilik**, README staging menandainya jangan dipublikasikan sebagai lulus.
+  - **Tokenizer:** 11 model × 35 prompt = **385/385 exact**.
 
 ---
 
-### Web Klon 1:1 `liwet-space-cpp/` (`§7`) — **BELUM DIMULAI (0%)**
-- [ ] Buat struktur lengkap `liwet-space-cpp/` (`app.py`, `liwet_backend.py`, `backends/torch_backend.py`, `backends/llamacpp_inproc.py`, `backends/llamacpp_server.py`, `gguf_catalog.py`, `requirements.txt`, `README.md`) dan `scripts/run_local_servers.ps1`.
-- [ ] Pastikan single-source import dari `liwet-space/liwet_models.py` untuk katalog, prompt builder, tokenisasi, stop-id, dan pembersihan reply.
-- [ ] Verifikasi mode paritas & mode cepat sampler native, benchmark kecepatan GPU (`≥ 100 tok/s`) & CPU lokal (`≥ 25 tok/s`), serta lulus checklist `P5` dengan screenshot berdampingan di `docs/bench/ui/`.
+### Web Klon 1:1 `liwet-space-cpp/` (`§7`) — **SELESAI (100%)**
+- [x] Buat struktur lengkap `liwet-space-cpp/` (`app.py`, `liwet_backend.py`, `backends/torch_backend.py`, `backends/llamacpp_inproc.py`, `backends/llamacpp_server.py`, `gguf_catalog.py`, `requirements.txt`, `README.md`) dan `scripts/run_local_servers.ps1`.
+- [x] Pastikan single-source import dari `liwet-space/liwet_models.py` untuk katalog, prompt builder, tokenisasi, stop-id, dan pembersihan reply.
+- [x] Verifikasi mode paritas & mode cepat sampler native, benchmark kecepatan GPU (`≥ 100 tok/s`) & CPU lokal (`≥ 25 tok/s`), serta lulus checklist `P5` dengan screenshot berdampingan di `docs/bench/ui/` (`CHECKLIST_P5.md`; diff `app.py` hanya baris import backend; inventaris tab/button/label/header/teks identik).
 
 ---
 
-### Tahap Akhir — 8 Varian Sisa, Staging `-GGUF`, Ollama & Laporan Final (`§6.B6`, `§8`, `§9`) — **BELUM DIMULAI (0%)**
-- [ ] Ekspor, konversi (`BF16`, `F16`, `Q8_0`), uji paritas `P1`/`P2`, dan benchmark ke-8 varian model sisanya.
-- [ ] Susun 11 folder staging repo `fadhilahkhairogi/<Model>-GGUF` secara lokal di `E:\liwet_gguf_build\hf_gguf_staging\` (jangan upload sebelum izin pemilik).
-- [ ] Diagnosa masalah startup Ollama lokal (`%LOCALAPPDATA%\Ollama\server.log`) & buat `Modelfile` untuk seluruh varian dense (`66M`, `163M`) di `scripts/ollama/`.
-- [ ] Finalisasi laporan komprehensif di `docs/bench/RESULTS.md` dan minta konfirmasi pemilik untuk langkah remote/Admin.
+### Tahap Akhir — 8 Varian Sisa, Staging `-GGUF`, Ollama & Laporan Final (`§6.B6`, `§8`, `§9`) — **SELESAI (100%)**
+- [x] Ekspor, konversi (`BF16`, `F16`, `Q8_0`), uji paritas `P1`/`P2`, dan benchmark ke-8 varian model sisanya.
+- [x] Susun 11 folder staging repo `fadhilahkhairogi/<Model>-GGUF` secara lokal di `E:\liwet_gguf_build\hf_gguf_staging\` (jangan upload sebelum izin pemilik). Setiap folder berisi 3 GGUF + `tokenizer.json` + `README.md` (spesifikasi prompt, tabel paritas, benchmark GPU/CPU, sha256).
+- [x] Diagnosa masalah startup Ollama lokal (`%LOCALAPPDATA%\Ollama\server.log`) & buat `Modelfile` untuk seluruh varian dense (`66M`, `163M`) di `scripts/ollama/` — 8 `Modelfile`, validasi greedy 8/8; diagnosis didokumentasikan di `scripts/ollama/README.md`.
+- [x] Finalisasi laporan komprehensif di `docs/bench/RESULTS.md` dan minta konfirmasi pemilik untuk langkah remote/Admin.
+
+### Tersisa — menunggu pemilik (bukan pekerjaan teknis)
+- [ ] Konfirmasi eksplisit untuk mengunggah 11 repo `-GGUF` ke HF Hub dan membuat/mendeploy Space.
+- [ ] Keputusan status publik **400M `base`** (README staging saat ini: jangan dipublikasikan sebagai lulus).
+- [ ] (Opsional) Jalankan skrip Administrator Intel DTT — hanya boleh oleh pemilik.

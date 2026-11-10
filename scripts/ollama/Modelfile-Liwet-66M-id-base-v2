@@ -1,0 +1,17 @@
+# Liwet-LLM / Liwet-66M-id-base-v2 (dense, 66.7M MiniTransformer)
+# Sumber bobot: https://huggingface.co/fadhilahkhairogi/Liwet-66M-id-base-v2
+# GGUF dikonversi dengan fork llama.cpp commit cae551692 (branch liwet-moe).
+# Bukan untuk diunggah otomatis; jalankan: ollama create <nama> -f <file ini>
+
+FROM E:\liwet_gguf_build\gguf\Liwet-66M-id-base-v2-Q8_0.gguf
+
+TEMPLATE """{{ .Prompt }}"""
+
+PARAMETER num_ctx 1024
+PARAMETER temperature 0.7
+PARAMETER top_k 50
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.1
+PARAMETER num_predict 128
+
+SYSTEM ""

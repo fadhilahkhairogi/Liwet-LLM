@@ -1,0 +1,3 @@
+# Ollama Modelfiles must stay LF-only: CRLF leaks "\r\n" into the rendered
+# TEMPLATE prompt and changes greedy output (see scripts/ollama/README.md).
+scripts/ollama/Modelfile-* text eol=lf

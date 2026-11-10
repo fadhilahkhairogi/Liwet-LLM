@@ -1,0 +1,92 @@
+{
+  "model": "fadhilahkhairogi/Liwet-400M-A188M-id-base",
+  "backend": "llamacpp",
+  "regime": "gguf_bf16",
+  "P1_logit": {
+    "n": 35,
+    "min_cosine": 0.891799,
+    "mean_cosine": 0.993108,
+    "max_abs_diff": 4.96731,
+    "top1_match_pct": 65.71,
+    "passed": false
+  },
+  "P2_greedy_norep": {
+    "n": 6,
+    "exact_128_pct": 16.67,
+    "median_first_div": 0.5,
+    "min_first_div": 0,
+    "non_tie_divergences": [
+      {
+        "id": "raw_bos_00",
+        "step": 1,
+        "gap": 0.3125
+      },
+      {
+        "id": "raw_bos_26",
+        "step": 5,
+        "gap": 0.09375
+      },
+      {
+        "id": "raw_bos_mt_00",
+        "step": 0,
+        "gap": 0.0625
+      },
+      {
+        "id": "raw_bos_long_2048",
+        "step": 0,
+        "gap": 0.5
+      },
+      {
+        "id": "raw_bos_01",
+        "step": 0,
+        "gap": 0.5625
+      }
+    ],
+    "passed": false
+  },
+  "P2_greedy_defrep": {
+    "n": 6,
+    "exact_128_pct": 0.0,
+    "median_first_div": 0.0,
+    "min_first_div": 0,
+    "non_tie_divergences": [
+      {
+        "id": "raw_bos_00",
+        "step": 10,
+        "gap": 0.1875
+      },
+      {
+        "id": "raw_bos_26",
+        "step": 0,
+        "gap": 0.05682
+      },
+      {
+        "id": "raw_bos_mt_00",
+        "step": 0,
+        "gap": 0.0625
+      },
+      {
+        "id": "raw_bos_long_2048",
+        "step": 0,
+        "gap": 0.5
+      },
+      {
+        "id": "raw_bos_long_1024",
+        "step": 1,
+        "gap": 0.125
+      }
+    ],
+    "passed": false
+  },
+  "P3_router": {
+    "total_token_layers": 1056,
+    "exact_set_match_pct": 71.97,
+    "passed": false
+  },
+  "P4_sampling": {
+    "max_tvd": 0.292,
+    "mean_tvd": 0.238,
+    "passed": false
+  },
+  "ALL_PASSED": false
+}

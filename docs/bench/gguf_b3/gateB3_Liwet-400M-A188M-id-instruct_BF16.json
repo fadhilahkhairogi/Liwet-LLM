@@ -1,0 +1,82 @@
+{
+  "model": "fadhilahkhairogi/Liwet-400M-A188M-id-instruct",
+  "backend": "llamacpp",
+  "regime": "gguf_bf16",
+  "P1_logit": {
+    "n": 35,
+    "min_cosine": 0.52417,
+    "mean_cosine": 0.983804,
+    "max_abs_diff": 5.20424,
+    "top1_match_pct": 97.14,
+    "passed": false
+  },
+  "P2_greedy_norep": {
+    "n": 6,
+    "exact_128_pct": 16.67,
+    "median_first_div": 27.5,
+    "min_first_div": 10,
+    "non_tie_divergences": [
+      {
+        "id": "chat_role_26",
+        "step": 24,
+        "gap": 0.1875
+      },
+      {
+        "id": "chat_role_mt_00",
+        "step": 34,
+        "gap": 0.0625
+      },
+      {
+        "id": "chat_role_long_2048",
+        "step": 10,
+        "gap": 0.75
+      },
+      {
+        "id": "chat_role_01",
+        "step": 12,
+        "gap": 0.28125
+      }
+    ],
+    "passed": false
+  },
+  "P2_greedy_defrep": {
+    "n": 6,
+    "exact_128_pct": 16.67,
+    "median_first_div": 21.0,
+    "min_first_div": 10,
+    "non_tie_divergences": [
+      {
+        "id": "chat_role_00",
+        "step": 23,
+        "gap": 0.06818
+      },
+      {
+        "id": "chat_role_26",
+        "step": 45,
+        "gap": 0.0625
+      },
+      {
+        "id": "chat_role_long_2048",
+        "step": 10,
+        "gap": 0.68182
+      },
+      {
+        "id": "chat_role_long_1024",
+        "step": 19,
+        "gap": 0.07386
+      }
+    ],
+    "passed": false
+  },
+  "P3_router": {
+    "total_token_layers": 1056,
+    "exact_set_match_pct": 90.436,
+    "passed": false
+  },
+  "P4_sampling": {
+    "max_tvd": 0.13,
+    "mean_tvd": 0.0732,
+    "passed": false
+  },
+  "ALL_PASSED": false
+}

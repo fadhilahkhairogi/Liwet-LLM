@@ -1,0 +1,25 @@
+# Liwet-LLM / Liwet-163M-id-chat (dense, 163M Dense GQA)
+# Sumber bobot: https://huggingface.co/fadhilahkhairogi/Liwet-163M-id-chat
+# GGUF dikonversi dengan fork llama.cpp commit cae551692 (branch liwet-moe).
+# Bukan untuk diunggah otomatis; jalankan: ollama create <nama> -f <file ini>
+
+FROM E:\liwet_gguf_build\gguf\Liwet-163M-id-chat-Q8_0.gguf
+
+TEMPLATE """<bos>{{ if .System }}System: {{ .System }}
+
+{{ end }}{{ range .Messages }}{{ if eq .Role "user" }}User: {{ .Content }}
+
+{{ else if eq .Role "assistant" }}Assistant: {{ .Content }}
+
+{{ end }}{{ end }}Assistant:"""
+
+PARAMETER num_ctx 2048
+PARAMETER temperature 0.55
+PARAMETER top_k 40
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.15
+PARAMETER num_predict 192
+PARAMETER stop "\n\nUser:"
+PARAMETER stop "\n\nSystem:"
+
+SYSTEM """Anda adalah asisten AI berbahasa Indonesia yang membantu, ramah, dan ringkas."""
