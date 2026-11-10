@@ -1,7 +1,7 @@
 # Plan Progress So Far — Liwet-LLM Inference Optimization
 
 > **Terakhir Diperbarui:** `2026-11-10` (sesudah reinstall torch `2.9.1+cu128`)  
-> **Estimasi Progres Total:** **~45% Selesai**  
+> **Estimasi Progres Total:** **~47% Selesai**  
 > **Spesifikasi Rencana:** [INFERENCE_OPTIMIZATION_PLAN.md](INFERENCE_OPTIMIZATION_PLAN.md)  
 > **Konteks Detail & Diagnosis Sesi Sebelumnya:** [PREVIOUS_AGENT_SESSION.md](PREVIOUS_AGENT_SESSION.md)  
 > **Data Benchmark & Profiler:** [bench/RESULTS.md](bench/RESULTS.md)
@@ -13,8 +13,8 @@
 | Kode | Deliverable | Lokasi Target | Progres | Status Saat Ini |
 |---|---|---|---:|---|
 | **D1** | Skrip benchmark & profiler + baseline | `scripts/bench/`, `docs/bench/RESULTS.md` | **100%** | Selesai & lulus Gate Fase 0 |
-| **D2** | Harness paritas + dump referensi | `scripts/parity/`, `E:\liwet_gguf_build\parity_ref\` | **90%** | Dump referensi 3 model chat selesai, tetapi dibuat pada instalasi torch lama; `66M` sudah diregenerasi & lulus di lingkungan baru, `163M`/`400M` menunggu drive `E:`. `compare.py` perlu mode `llamacpp` di Jalur B |
-| **D3** | PyTorch fastpath (`LIWET_FASTPATH`) | `liwet-space/liwet_models.py`, `liwet-space/app.py` (`perf/torch-fastpath`) | **95%** | Gate A terpenuhi: `400M` **105.28 tok/s** headless (dari `1.73 tok/s`), `stream_generate` +16.7%, UI +1.2%, P1–P4 lulus, `LIWET_FASTPATH=0` identik. Sisa: regenerasi dump 163M/400M saat drive `E:` kembali |
+| **D2** | Harness paritas + dump referensi | `scripts/parity/`, `E:\liwet_gguf_build\parity_ref\` | **100%** | Dump referensi 3 model chat **diregenerasi di lingkungan torch `2.9.1+cu128`** dan dipromosikan (`parity_ref_v2 → parity_ref`). `compare.py` masih perlu mode `llamacpp` di Jalur B |
+| **D3** | PyTorch fastpath (`LIWET_FASTPATH`) | `liwet-space/liwet_models.py`, `liwet-space/app.py` (`perf/torch-fastpath`) | **100%** | Gate A terpenuhi: `400M` **105.28 tok/s** headless (dari `1.73 tok/s`), `stream_generate` +16.7%, UI +1.2%, P1–P4 `ALL_PASSED` ketiga model, `LIWET_FASTPATH=0` P1 `max_abs 0.0` |
 | **D4** | Fork `llama.cpp` + patch MoE + CI CPU wheel | `E:\liwet_gguf_build\llama.cpp` (`liwet-moe`) | **45%** | Patch C++ & converter Python selesai ditulis di atas commit vendor `0c1e57098`; belum dikompilasi & belum ada workflow GitHub Actions |
 | **D5** | Skrip ekspor HF-Llama/Mixtral & konversi GGUF | `scripts/gguf/` | **50%** | `export_hf_llama.py` & `verify_hf_llama_parity.py` selesai dibuat; skrip batch konversi/kuantisasi GGUF & eksekusinya menunggu Gate A selesai |
 | **D6** | 11 repo `-GGUF` (staging lokal dulu) | `E:\liwet_gguf_build\hf_gguf_staging\` | **0%** | Belum dimulai (menunggu Gate B2/B3 lulus & izin upload pemilik) |
@@ -57,7 +57,7 @@
   - [x] Benchmark CPU + overhead UI Gradio: UI direct `chat_send` **+1.2%** vs headless (≤ 20%); HTTP/SSE server-side −14.4% (biaya SSE ~100 ms/event).
   - [x] Checklist UI `P5`: diff `app.py` tidak menambah/menghapus elemen UI apa pun.
   - [x] Update `docs/bench/RESULTS.md` (bagian Jalur A) & commit branch `perf/torch-fastpath` (tanpa push).
-  - [ ] **Caveat / sisa:** instalasi torch lama ternyata korup dan sudah di-reinstall ke `2.9.1+cu128`. Rounding bf16 antar-build berubah, sehingga dump referensi lama tidak berlaku lagi untuk verifikasi numerik. `66M` sudah diregenerasi & `ALL_PASSED`; regenerasi `163M`/`400M` + promosi `parity_ref_v2 → parity_ref` **diblokir karena drive `E:` tidak ter-mount**.
+  - [x] **Caveat lingkungan tuntas:** instalasi torch lama korup dan sudah di-reinstall ke `2.9.1+cu128`. Karena rounding bf16 antar-build berubah, seluruh dump referensi `parity_ref_v2` (66M, 163M, 400M) diregenerasi di lingkungan saat ini lalu dipromosikan ke `parity_ref`; P1–P4 dijalankan ulang untuk ketiga model dengan fastpath on dan `LIWET_FASTPATH=0` → **semua `ALL_PASSED`**, dan fastpath-off `P1 max_abs = 0.0`.
 
 ---
 

@@ -103,7 +103,9 @@ Artefak: [parity_track_a_cuda_Liwet-66M-id-chat.json](parity_track_a_cuda_Liwet-
 
 **`LIWET_FASTPATH=0` exact-old-behavior:** seluruh model `ALL_PASSED` dengan **P1 `max_abs_diff = 0.0`** dan P2 100% — membuktikan jalur lama tetap bit-identik terhadap referensi.
 
-⚠️ **Caveat penting (lingkungan):** artefak `parity_track_a_cuda_*` / `parity_fastpath_off_*` di folder ini dibuat **sebelum** torch di-reinstall. Setelah reinstall, *rounding bf16 antar-build torch berbeda*, sehingga dump referensi lama tidak lagi cocok secara numerik (divergensi pertama pada 66M di langkah ke-9 dari 36 run, **semua** berupa tie, `non_tie_divergences: []`). Setelah dump 66M diregenerasi di lingkungan saat ini, hasilnya **kembali `ALL_PASSED`** (P2 100%, P4 `0.0`), dan perilaku identik terbukti juga saat `LIWET_FASTPATH=0` — jadi perbedaannya adalah cross-build, bukan regresi fastpath. Regenerasi dump **163M & 400M** sedang menunggu drive `E:` (lokasi artefak besar) tersambung kembali; sampai itu selesai, baris 163M/400M di tabel paritas di atas adalah hasil lingkungan lama.
+✅ **Status verifikasi (diperbarui 2026-11-10):** seluruh artefak paritas di atas sudah **diregenerasi ulang di lingkungan torch `2.9.1+cu128`** — dump referensi baru ditulis ke `E:\liwet_gguf_build\parity_ref_v2\` lalu dipromosikan ke `parity_ref` (backup lama: `parity_ref_backup_20261110_0520`). Hasil: ketiga model **`ALL_PASSED`** dengan fastpath menyala, dan dengan **`LIWET_FASTPATH=0` P1 `max_abs_diff = 0.0` untuk ketiganya**. P2 `exact_128 = 100%` dan P4 `max_tvd = 0.0` di semua kombinasi.
+
+**Catatan historis (cross-build):** dump yang dibuat pada build torch lama tidak cocok secara numerik dengan build baru — pada 66M divergensi pertama muncul di langkah ke-9 dari 36 run dan **semuanya tie** (`non_tie_divergences: []`), lantas direproduksi identik saat `LIWET_FASTPATH=0`. Jadi itu perbedaan rounding bf16 antar-build, bukan regresi fastpath. Karena itu dump lama **tidak boleh** dipakai untuk menyimpulkan kegagalan paritas setelah upgrade/reinstall torch; regenerasi dump lebih dulu.
 
 **Diagnosis lama yang dikoreksi:** penyebab divergensi paritas sebelumnya **bukan** `allow_tf32=True` / `set_float32_matmul_precision("high")` / fused QKV — ketiganya ada juga di referensi pristine. Penyebab sebenarnya adalah `SDPA enable_gqa=True` yang memilih kernel berbeda; fastpath sekarang memakai `repeat_interleave` secara default (`LIWET_SDPA_GQA=1` untuk opt-in).
 
@@ -122,7 +124,7 @@ Sumber: [gradio_overhead_track_a.json](gradio_overhead_track_a.json) (`bench_gra
 | `stream_generate` overhead | ≤20% | 400M +16.7%, 163M +11.3%, 66M +6.2% | ✅ |
 | UI vs headless | ≤20% | Direct `chat_send` **+1.2%**; HTTP/SSE server-side −14.4% | ✅ |
 | P1 logit | cosine ≥0.9999, top1 100% | min cosine ≥0.999996, top1 100% | ✅ |
-| P2 greedy 128-step | exact ≥95%, tanpa non-tie divergence | 100%, `non_tie_divergences: []` | ✅ (66M terverifikasi ulang pasca-reinstall; 163M/400M menunggu dump baru) |
+| P2 greedy 128-step | exact ≥95%, tanpa non-tie divergence | 100%, `non_tie_divergences: []` | ✅ (ketiga model terverifikasi ulang pasca-reinstall) |
 | P3 router MoE | exact-set ≥99.5% | 100% (`1120` token-layer) | ✅ |
 | P4 sampling | max TVD ≤0.05 | 0.0 | ✅ |
 | `LIWET_FASTPATH=0` | identik perilaku lama | P1 `max_abs 0.0`, P2 100% | ✅ |
@@ -130,5 +132,5 @@ Sumber: [gradio_overhead_track_a.json](gradio_overhead_track_a.json) (`bench_gra
 | CPU ≥25 tok/s | — | 66M 48.46 ✅; 163M 7.22 ❌; 400M 3.42 ❌ | ⏭️ target Jalur B (GGUF) |
 
 ### 6. Catatan Operasional
-- **Drive `E:` (yang menyimpan `liwet_gguf_build/`, dump paritas, build `llama.cpp`, trace) hilang di tengah sesi**; hanya `C:` dan `D:` ter-mount. Semua langkah yang bergantung pada dump besar (regenerasi 400M, promosi `parity_ref_v2 → parity_ref`, parity 3-model ulang) **diblokir** sampai drive tersambung lagi. Tidak ada artefak besar yang ditulis ke `C:`.
+- **Drive `E:` sempat hilang di tengah sesi** (hanya `C:` dan `D:` ter-mount), lalu tersambung kembali. Setelah itu dump 400M dilengkapi, `parity_ref_v2` dipromosikan ke `parity_ref`, dan paritas 3 model dijalankan ulang (lihat §3). Tidak ada artefak besar yang ditulis ke `C:`.
 - Instalasi torch yang korup juga menghapus `torchvision`; belum dibutuhkan oleh fastpath/app, tetapi perlu dipasang ulang bila profiling berbasis torchvision diperlukan.

@@ -52,7 +52,7 @@ Dokumen ini berisi transfer konteks lengkap tanpa kehilangan informasi (*zero-lo
 |---|---|---|
 | Repo utama `Liwet-LLM` | `d:\Fadhil\Pelajaran\Kuliah\Semester_7\GENAI\Liwet-LLM` | Branch `perf/torch-fastpath` (base `ab9907b`) |
 | Safetensors lokal (11 model) | `d:\Fadhil\Pelajaran\Kuliah\Semester_7\GENAI\TUBES_1_SAFETENSOR` | Read-only (semua 11 varian lengkap) |
-| Dump referensi paritas | `E:\liwet_gguf_build\parity_ref\` (lama) & `parity_ref_v2\` (regenerasi) | **Drive `E:` tidak ter-mount saat ini.** `parity_ref_v2` sudah berisi `66M` & `163M`; `400M` belum lengkap (baru `meta.json`, `prefill_bf16_cuda.npz`, `sampling_p4.npz`). Backup lama: `parity_ref_backup_20261110_0520` |
+| Dump referensi paritas | `E:\liwet_gguf_build\parity_ref\` | **Lengkap & terbaru** untuk 3 model chat (diregenerasi di torch `2.9.1+cu128`, `parity_ref_v2` sudah dipromosikan). Backup lingkungan lama: `parity_ref_backup_20261110_0520` |
 | Trace profiler Fase 0 | `E:\liwet_gguf_build\traces\trace_Liwet-400M-A188M-id-chat.json` | Selesai (`79.61 MB`) |
 | Fork `llama.cpp` | `E:\liwet_gguf_build\llama.cpp` | Branch `liwet-moe` di atas commit `0c1e57098bba43ac29e6e3b677cdceebdd22334f` (patch belum di-commit, belum di-build) |
 | Clone `llama-cpp-python` | `E:\liwet_gguf_build\llama-cpp-python` | Tag `v0.3.36` (`1652066`), submodule `vendor/llama.cpp` menunjuk tepat ke `0c1e57098bba43ac29e6e3b677cdceebdd22334f` |
@@ -174,12 +174,12 @@ Gate A **terpenuhi** di lingkungan torch `2.9.1+cu128` (DTT throttle masih aktif
 
 ### 5.3 Temuan Lingkungan yang Wajib Diingat
 1. **Instalasi torch lama korup & sudah di-reinstall.** Cross-build bf16 rounding berubah, sehingga dump referensi lama **tidak lagi cocok numerik** (66M: divergensi pertama di langkah 9/36, **semua tie**, `non_tie_divergences: []`). Direproduksi identik dengan `LIWET_FASTPATH=0` → bukan bug fastpath.
-2. **66M sudah diregenerasi di lingkungan baru:** `ALL_PASSED`, P2 `exact_128 = 100%`, P4 `0.0`. **163M/400M belum** — menunggu drive `E:`.
-3. **Drive `E:` hilang di tengah sesi** (hanya `C:` & `D:` ter-mount). Semua artefak besar tetap tidak ditulis ke `C:`.
+2. **Seluruh dump referensi sudah diregenerasi di lingkungan baru** (`66M`, `163M`, `400M`) dan dipromosikan ke `parity_ref`. P1–P4 dijalankan ulang untuk ketiga model, fastpath on **dan** `LIWET_FASTPATH=0` → semuanya `ALL_PASSED`; fastpath-off `P1 max_abs_diff = 0.0` untuk ketiganya.
+3. **Drive `E:` sempat hilang di tengah sesi** (hanya `C:` & `D:` ter-mount) lalu tersambung kembali; dump 400M dilengkapi setelahnya. Artefak besar tetap tidak ditulis ke `C:`.
 4. **Bench overhead Gradio perlu warmup 1 generasi** (`bench_gradio_overhead.py` sudah diedit). Tanpa warmup, CUDA-graph capture/cold kernel masuk wall tapi tidak masuk `model_seconds` → overhead palsu 67%.
 
 ### 5.4 Titik Lanjut Pertama Agen Berikutnya
-1. Sambungkan drive `E:`, lengkapi dump `400M` di `parity_ref_v2`, promosikan `parity_ref_v2 → parity_ref` (backup lama aman), lalu jalankan ulang P1–P4 untuk 3 model **fastpath on** dan `LIWET_FASTPATH=0`; timpa artefak `docs/bench/parity_*` dengan hasil lingkungan saat ini.
-2. Pastikan commit Jalur A di `perf/torch-fastpath` sudah dibuat (tanpa push).
-3. Lanjut **Gate B2** (`export_hf_llama.py` → `E:\liwet_gguf_build\hf_llama_tmp\`, `verify_hf_llama_parity.py`), lalu B4/B5 dan Gate B3 sesuai urutan §4.
+1. ✅ **Selesai:** dump 400M dilengkapi, `parity_ref_v2` dipromosikan ke `parity_ref`, dan P1–P4 dijalankan ulang untuk 3 model (fastpath on & `LIWET_FASTPATH=0`). Artefak `docs/bench/parity_*` sudah ditimpa hasil lingkungan saat ini.
+2. ✅ Commit Jalur A sudah ada di `perf/torch-fastpath` (`b6d141a`, tanpa push), ditambah commit verifikasi paritas ulang.
+3. **Langkah berikutnya:** Gate B2 (`export_hf_llama.py` → `E:\liwet_gguf_build\hf_llama_tmp\`, `verify_hf_llama_parity.py`), lalu B4/B5 dan Gate B3 sesuai urutan §4.
 4. Jangan lupa batasan pemilik: tanpa push `main`, tanpa upload `-GGUF`/Space, tanpa mengubah UI, tanpa menjalankan `.bat` Admin, dan tanpa artefak besar di `C:`.
