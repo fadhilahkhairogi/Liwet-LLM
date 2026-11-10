@@ -1,7 +1,7 @@
 # Plan Progress So Far — Liwet-LLM Inference Optimization
 
-> **Terakhir Diperbarui:** `2026-11-11` (Tahap akhir selesai: 11 varian × 3 quant, staging `-GGUF`, klon web, Ollama, laporan final + retest fp32 400M base; upload HF diizinkan & dijalankan)  
-> **Estimasi Progres Total:** **~95% Selesai** (sisa hanya Space/deploy yang belum diizinkan)  
+> **Terakhir Diperbarui:** `2026-11-11` (Tahap akhir selesai: 11 varian × 3 quant, staging `-GGUF`, klon web, Ollama, laporan final + retest fp32 400M base; **11 repo `-GGUF` sudah diunggah & terverifikasi di HF Hub**)  
+> **Estimasi Progres Total:** **~98% Selesai** (sisa hanya Space/deploy yang belum diizinkan)  
 > **Spesifikasi Rencana:** [INFERENCE_OPTIMIZATION_PLAN.md](INFERENCE_OPTIMIZATION_PLAN.md)  
 > **Konteks Detail & Diagnosis Sesi Sebelumnya:** [PREVIOUS_AGENT_SESSION.md](PREVIOUS_AGENT_SESSION.md)  
 > **Data Benchmark & Profiler:** [bench/RESULTS.md](bench/RESULTS.md)
@@ -17,7 +17,7 @@
 | **D3** | PyTorch fastpath (`LIWET_FASTPATH`) | `liwet-space/liwet_models.py`, `liwet-space/app.py` (`perf/torch-fastpath`) | **100%** | Gate A terpenuhi: `400M` **105.28 tok/s** headless (dari `1.73 tok/s`), `stream_generate` +16.7%, UI +1.2%, P1–P4 `ALL_PASSED` ketiga model, `LIWET_FASTPATH=0` P1 `max_abs 0.0` |
 | **D4** | Fork `llama.cpp` + patch MoE + CI CPU wheel | `E:\liwet_gguf_build\llama.cpp` (`liwet-moe`) | **100%** | Binary CUDA SM89 + `llama-cpp-python` wheel terpasang; dispatch capacity (`stable_sort`) & eval-callback selesai (3 commit lokal); workflow CPU wheel ter-commit (belum di-push) |
 | **D5** | Skrip ekspor HF-Llama/Mixtral & konversi GGUF | `scripts/gguf/` | **100%** | Gate B2 lulus; **11 varian × `BF16`/`F16`/`Q8_0`** terkonversi; tokenizer **385/385 exact** (11 model × 35 prompt) |
-| **D6** | 11 repo `-GGUF` (staging lokal dulu) | `E:\liwet_gguf_build\hf_gguf_staging\` | **100%** (lokal) | 11 folder staging lengkap: 3 GGUF + `tokenizer.json` + README (spesifikasi prompt, tabel paritas, benchmark, sha256). **Belum diunggah** — menunggu konfirmasi eksplisit pemilik |
+| **D6** | 11 repo `-GGUF` (staging lokal dulu) | `E:\liwet_gguf_build\hf_gguf_staging\`, `fadhilahkhairogi/<Model>-GGUF` | **100%** | 11 folder staging lengkap: 3 GGUF + `tokenizer.json` + README (spesifikasi prompt, tabel paritas, benchmark, sha256). **Sudah diunggah ke HF Hub 2026-11-11** dan diverifikasi: 44/44 file manifest ukurannya cocok, README + `.gitattributes` ikut terunggah |
 | **D7** | Web klon 1:1 `liwet-space-cpp/` | `liwet-space-cpp/`, `scripts/run_local_servers.ps1` | **100%** | Struktur + backend (`torch`, `llamacpp_inproc`, `llamacpp_server`) selesai; single-source import `liwet_models.py`; diff `app.py` hanya baris import backend; checklist `P5` + screenshot 3 tab di `docs/bench/ui/` |
 | **D8** | Diagnosa Ollama & `Modelfile` dense (`66M`, `163M`) | `scripts/ollama/` | **100%** | 8 `Modelfile` dense; diagnosis watchdog GPU-discovery → CPU fallback, CRLF→`\r\n`, dan BOS ganda/hilang; validasi greedy **8/8 identik** dengan backend aplikasi |
 | **D9** | Laporan akhir seluruh model × backend × dtype | `docs/bench/RESULTS.md` | **100%** | 11 varian × 3 quant + benchmark GPU/CPU + profil + Jalur A/B + analisis MoE + catatan staging/Ollama; sisa hanya keputusan status publik 400M base |
@@ -92,12 +92,12 @@
 
 ### Tahap Akhir — 8 Varian Sisa, Staging `-GGUF`, Ollama & Laporan Final (`§6.B6`, `§8`, `§9`) — **SELESAI (100%)**
 - [x] Ekspor, konversi (`BF16`, `F16`, `Q8_0`), uji paritas `P1`/`P2`, dan benchmark ke-8 varian model sisanya.
-- [x] Susun 11 folder staging repo `fadhilahkhairogi/<Model>-GGUF` secara lokal di `E:\liwet_gguf_build\hf_gguf_staging\` (jangan upload sebelum izin pemilik). Setiap folder berisi 3 GGUF + `tokenizer.json` + `README.md` (spesifikasi prompt, tabel paritas, benchmark GPU/CPU, sha256).
+- [x] Susun 11 folder staging repo `fadhilahkhairogi/<Model>-GGUF` secara lokal di `E:\liwet_gguf_build\hf_gguf_staging\` (unggah hanya setelah izin pemilik). Setiap folder berisi 3 GGUF + `tokenizer.json` + `README.md` (spesifikasi prompt, tabel paritas, benchmark GPU/CPU, sha256).
 - [x] Diagnosa masalah startup Ollama lokal (`%LOCALAPPDATA%\Ollama\server.log`) & buat `Modelfile` untuk seluruh varian dense (`66M`, `163M`) di `scripts/ollama/` — 8 `Modelfile`, validasi greedy 8/8; diagnosis didokumentasikan di `scripts/ollama/README.md`.
 - [x] Finalisasi laporan komprehensif di `docs/bench/RESULTS.md` dan minta konfirmasi pemilik untuk langkah remote/Admin.
 
 ### Tersisa — tindakan pemilik
-- [x] Izin eksplisit unggah 11 repo `-GGUF` ke HF Hub diberikan **2026-11-11**; unggah dijalankan.
+- [x] Izin eksplisit unggah 11 repo `-GGUF` ke HF Hub diberikan **2026-11-11**; **selesai** — 11 repo `fadhilahkhairogi/<Model>-GGUF` dibuat, 44/44 file diverifikasi cocok ukurannya, README ter-render (LF-only).
 - [x] Status publik **400M `base`**: retest fp32 dijalankan → dipublikasikan sebagai **eksperimental** (top-1 tetap <95%, referensi bf16 terbukti tidak stabil).
 - [ ] Pembuatan/deploy Space **belum** diizinkan.
 - [ ] (Opsional) Jalankan skrip Administrator Intel DTT — hanya boleh oleh pemilik.
