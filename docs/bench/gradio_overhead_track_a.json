@@ -1,0 +1,17 @@
+{
+  "model": "fadhilahkhairogi/Liwet-400M-A188M-id-chat",
+  "max_new_tokens": 128,
+  "hub_force_refresh_avail": true,
+  "hub_force_refresh_s": 0.362,
+  "direct_chat_send": {
+    "yield_count": 24,
+    "wall_s": 1.375,
+    "last_stats_md": "**1.37 dtk** · **93.7 tok/s** · 128/255 tok",
+    "yield_gaps_ms_sum": 1374.6
+  },
+  "gradio_http_sse": {
+    "http_wall_s": 3.355,
+    "sse_events": 21,
+    "final_stats_md": "**1.21 dtk** · **80.8 tok/s** · 98/251 tok"
+  }
+}

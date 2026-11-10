@@ -1,0 +1,40 @@
+{
+  "model": "fadhilahkhairogi/Liwet-400M-A188M-id-chat",
+  "backend": "torch_fast",
+  "regime": "same_dtype",
+  "P1_logit": {
+    "n": 35,
+    "min_cosine": 1.0,
+    "mean_cosine": 1.0,
+    "max_abs_diff": 0.0,
+    "top1_match_pct": 100.0,
+    "passed": true
+  },
+  "P2_greedy_norep": {
+    "n": 6,
+    "exact_128_pct": 100.0,
+    "median_first_div": 128.0,
+    "min_first_div": 128,
+    "non_tie_divergences": [],
+    "passed": true
+  },
+  "P2_greedy_defrep": {
+    "n": 6,
+    "exact_128_pct": 100.0,
+    "median_first_div": 128.0,
+    "min_first_div": 128,
+    "non_tie_divergences": [],
+    "passed": true
+  },
+  "P3_router": {
+    "total_token_layers": 1120,
+    "exact_set_match_pct": 100.0,
+    "passed": true
+  },
+  "P4_sampling": {
+    "max_tvd": 0.0,
+    "mean_tvd": 0.0,
+    "passed": true
+  },
+  "ALL_PASSED": true
+}

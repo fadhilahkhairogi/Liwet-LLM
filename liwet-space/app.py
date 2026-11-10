@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -11,6 +12,15 @@ try:
     import spaces
 except ImportError:
     spaces = None
+
+
+def _app_fastpath() -> bool:
+    return os.environ.get("LIWET_FASTPATH", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 def gpu_decorator(duration: int = 60):
@@ -67,7 +77,7 @@ PARAM_PRESETS: Dict[str, Dict[str, float]] = {
 
 _AVAIL_LOCK = threading.Lock()
 _AVAIL_CACHE: Dict[str, Tuple[float, bool]] = {}
-_AVAIL_TTL_SECONDS = 60.0
+_AVAIL_TTL_SECONDS = 300.0 if _app_fastpath() else 60.0
 
 
 def _is_repo_available(repo_id: str, force_refresh: bool = False) -> bool:
@@ -122,6 +132,12 @@ if ARENA_MODEL_B not in MODEL_IDS:
     ARENA_MODEL_B = LIWET_CATALOG[1].repo_id
 if ARENA_MODEL_C not in MODEL_IDS:
     ARENA_MODEL_C = ""
+
+if spaces is not None and _app_fastpath():
+    try:
+        load_liwet_model(DEFAULT_MODEL, device_name="auto")
+    except Exception:
+        pass
 
 
 def _render_hero(force_refresh: bool = False) -> str:
@@ -398,7 +414,7 @@ def _reset_lab_params():
     )
 
 
-@gpu_decorator(duration=60)
+@gpu_decorator(duration=20 if _app_fastpath() else 60)
 def chat_send(
     message,
     history,
@@ -422,7 +438,8 @@ def chat_send(
         return
 
     spec = get_model_spec(repo_id)
-    if spec.arch == "moe_400m" and not _is_repo_available(repo_id, force_refresh=True):
+    fastpath = _app_fastpath()
+    if spec.arch == "moe_400m" and not _is_repo_available(repo_id, force_refresh=not fastpath):
         display = history + [
             {"role": "user", "content": message},
             {"role": "assistant", "content": "Coming Soon — bobot 400M belum diunggah."},
@@ -448,6 +465,8 @@ def chat_send(
     final_text = ""
 
     try:
+        ticks = 0
+        last_yield_t = time.perf_counter()
         for partial in stream_generate(
             bundle,
             prompt_text,
@@ -460,11 +479,15 @@ def chat_send(
             stats=stats,
         ):
             final_text = partial
-            display[-1]["content"] = partial
-            yield display, "", "", "Menghasilkan..."
+            ticks += 1
+            now = time.perf_counter()
+            if not fastpath or ticks >= 8 or (now - last_yield_t) >= 0.05:
+                display[-1]["content"] = partial
+                yield display, "", "", "Menghasilkan..."
+                ticks = 0
+                last_yield_t = time.perf_counter()
 
-        if not final_text.strip():
-            display[-1]["content"] = "(Kosong)"
+        display[-1]["content"] = final_text if final_text.strip() else "(Kosong)"
         extra = "riwayat dipangkas" if trimmed else ""
         yield (
             display,
@@ -481,7 +504,7 @@ def clear_chat():
     return [], "", "", ""
 
 
-@gpu_decorator(duration=90)
+@gpu_decorator(duration=45 if _app_fastpath() else 90)
 def arena_run(
     prompt,
     system_prompt,
@@ -530,10 +553,11 @@ def arena_run(
 
     yield snapshot("Menyiapkan arena perbandingan...")
     started_all = time.perf_counter()
+    fastpath = _app_fastpath()
 
     for repo in selected:
         spec = specs[repo]
-        if spec.arch == "moe_400m" and not _is_repo_available(repo, force_refresh=True):
+        if spec.arch == "moe_400m" and not _is_repo_available(repo, force_refresh=not fastpath):
             rows[repo]["status"] = "Coming Soon"
             texts[repo] = (
                 f"Coming Soon — bobot SafeTensors `{spec.repo_id}` belum diunggah ke "
@@ -561,6 +585,8 @@ def arena_run(
         yield snapshot(f"Menghasilkan jawaban dengan **{spec.label}**...")
 
         try:
+            ticks = 0
+            last_yield_t = time.perf_counter()
             for partial in stream_generate(
                 bundle,
                 prompt_text,
@@ -573,11 +599,15 @@ def arena_run(
                 stats=stats,
             ):
                 final_text = partial
-                texts[repo] = partial
-                yield snapshot(f"Menghasilkan jawaban dengan **{spec.label}**...")
+                ticks += 1
+                now = time.perf_counter()
+                if not fastpath or ticks >= 8 or (now - last_yield_t) >= 0.05:
+                    texts[repo] = partial
+                    yield snapshot(f"Menghasilkan jawaban dengan **{spec.label}**...")
+                    ticks = 0
+                    last_yield_t = time.perf_counter()
 
-            if not final_text.strip():
-                texts[repo] = "(Model tidak menghasilkan token.)"
+            texts[repo] = final_text if final_text.strip() else "(Model tidak menghasilkan token.)"
             rows[repo].update(
                 {
                     "status": "Selesai"
@@ -646,7 +676,7 @@ def lab_preview(prompt, system_prompt, repo_id, use_format):
     return f"Format: `{mode}`\n\n{formatted}"
 
 
-@gpu_decorator(duration=60)
+@gpu_decorator(duration=20 if _app_fastpath() else 60)
 def lab_generate(
     prompt,
     system_prompt,
@@ -670,7 +700,8 @@ def lab_generate(
 
     spec = get_model_spec(repo_id)
     preview = lab_preview(prompt, system_prompt, repo_id, use_format)
-    if spec.arch == "moe_400m" and not _is_repo_available(repo_id, force_refresh=True):
+    fastpath = _app_fastpath()
+    if spec.arch == "moe_400m" and not _is_repo_available(repo_id, force_refresh=not fastpath):
         yield "", "", "Coming Soon — bobot 400M belum diunggah.", preview
         return
     yield "", "", f"Memuat {spec.label}...", preview
@@ -696,6 +727,8 @@ def lab_generate(
     started = time.perf_counter()
 
     try:
+        ticks = 0
+        last_yield_t = time.perf_counter()
         for partial in stream_generate(
             bundle,
             prompt_text,
@@ -708,13 +741,18 @@ def lab_generate(
             stats=stats,
         ):
             final_text = partial
-            elapsed = time.perf_counter() - started
-            yield (
-                final_text,
-                f"Berjalan · {elapsed:.1f} dtk",
-                "Menghasilkan...",
-                preview,
-            )
+            ticks += 1
+            now = time.perf_counter()
+            if not fastpath or ticks >= 8 or (now - last_yield_t) >= 0.05:
+                elapsed = now - started
+                yield (
+                    final_text,
+                    f"Berjalan · {elapsed:.1f} dtk",
+                    "Menghasilkan...",
+                    preview,
+                )
+                ticks = 0
+                last_yield_t = time.perf_counter()
 
         if not final_text.strip():
             final_text = "(Kosong)"

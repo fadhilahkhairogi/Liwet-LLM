@@ -1,0 +1,182 @@
+[
+  {
+    "repo_id": "fadhilahkhairogi/Liwet-400M-A188M-id-chat",
+    "device": "cuda",
+    "dtype": "torch.bfloat16",
+    "load_time_s": 18.338,
+    "peak_vram_mb": 1118.9,
+    "prefill": {
+      "32": {
+        "median_ms": 772.4,
+        "tok_per_s": 41.4
+      },
+      "512": {
+        "median_ms": 950.56,
+        "tok_per_s": 538.6
+      },
+      "1500": {
+        "median_ms": 1385.2,
+        "tok_per_s": 1082.9
+      }
+    },
+    "pure_forward_decode": {
+      "tokens": 256,
+      "total_s": 147.6564,
+      "tok_per_s": 1.73,
+      "ms_per_tok_p50": 494.3,
+      "ms_per_tok_p95": 890.9,
+      "gpu": {
+        "n_samples": 195,
+        "avg_sm_mhz": 713.3,
+        "max_sm_mhz": 1215.0,
+        "avg_power_w": 4.7,
+        "sw_power_cap_active": true,
+        "sw_thermal_active": true
+      }
+    },
+    "stream_generate_fixed": {
+      "tokens": 256,
+      "yield_count": 246,
+      "model_seconds": 147.6752,
+      "wall_seconds": 147.6817,
+      "tok_per_s": 1.73,
+      "yield_ms_p50": 497.83,
+      "yield_ms_p95": 919.98,
+      "gpu": {
+        "n_samples": 181,
+        "avg_sm_mhz": 725.1,
+        "max_sm_mhz": 1110.0,
+        "avg_power_w": 4.64,
+        "sw_power_cap_active": true,
+        "sw_thermal_active": true
+      }
+    },
+    "stream_generate_natural": {
+      "tokens": 176,
+      "model_seconds": 167.3483,
+      "wall_seconds": 167.3574,
+      "tok_per_s": 1.05,
+      "preview": "Komputasi GPU (Graphics Processing Unit) adalah teknologi komputer yang digunakan untuk memproses data besar seperti gam"
+    }
+  },
+  {
+    "repo_id": "fadhilahkhairogi/Liwet-163M-id-chat",
+    "device": "cuda",
+    "dtype": "torch.bfloat16",
+    "load_time_s": 15.958,
+    "peak_vram_mb": 464.4,
+    "prefill": {
+      "32": {
+        "median_ms": 225.67,
+        "tok_per_s": 141.8
+      },
+      "512": {
+        "median_ms": 228.41,
+        "tok_per_s": 2241.6
+      },
+      "1500": {
+        "median_ms": 171.14,
+        "tok_per_s": 8765.0
+      }
+    },
+    "pure_forward_decode": {
+      "tokens": 256,
+      "total_s": 50.5368,
+      "tok_per_s": 5.07,
+      "ms_per_tok_p50": 180.29,
+      "ms_per_tok_p95": 327.55,
+      "gpu": {
+        "n_samples": 24,
+        "avg_sm_mhz": 694.4,
+        "max_sm_mhz": 1380.0,
+        "avg_power_w": 5.33,
+        "sw_power_cap_active": true,
+        "sw_thermal_active": true
+      }
+    },
+    "stream_generate_fixed": {
+      "tokens": 256,
+      "yield_count": 248,
+      "model_seconds": 60.969,
+      "wall_seconds": 60.978,
+      "tok_per_s": 4.2,
+      "yield_ms_p50": 197.39,
+      "yield_ms_p95": 516.27,
+      "gpu": {
+        "n_samples": 20,
+        "avg_sm_mhz": 610.5,
+        "max_sm_mhz": 1230.0,
+        "avg_power_w": 5.07,
+        "sw_power_cap_active": true,
+        "sw_thermal_active": true
+      }
+    },
+    "stream_generate_natural": {
+      "tokens": 256,
+      "model_seconds": 61.3334,
+      "wall_seconds": 61.3368,
+      "tok_per_s": 4.17,
+      "preview": "GPU (Graphics Processing Unit) merupakan salah satu teknologi paling penting dalam pengembangan mesin komputer modern. P"
+    }
+  },
+  {
+    "repo_id": "fadhilahkhairogi/Liwet-66M-id-chat",
+    "device": "cuda",
+    "dtype": "torch.bfloat16",
+    "load_time_s": 8.953,
+    "peak_vram_mb": 229.4,
+    "prefill": {
+      "32": {
+        "median_ms": 330.66,
+        "tok_per_s": 96.8
+      },
+      "512": {
+        "median_ms": 315.17,
+        "tok_per_s": 1624.5
+      },
+      "752": {
+        "median_ms": 289.64,
+        "tok_per_s": 2596.3
+      }
+    },
+    "pure_forward_decode": {
+      "tokens": 256,
+      "total_s": 82.6279,
+      "tok_per_s": 3.1,
+      "ms_per_tok_p50": 319.58,
+      "ms_per_tok_p95": 416.07,
+      "gpu": {
+        "n_samples": 66,
+        "avg_sm_mhz": 288.0,
+        "max_sm_mhz": 600.0,
+        "avg_power_w": 2.95,
+        "sw_power_cap_active": true,
+        "sw_thermal_active": true
+      }
+    },
+    "stream_generate_fixed": {
+      "tokens": 256,
+      "yield_count": 231,
+      "model_seconds": 89.605,
+      "wall_seconds": 89.612,
+      "tok_per_s": 2.86,
+      "yield_ms_p50": 334.75,
+      "yield_ms_p95": 639.22,
+      "gpu": {
+        "n_samples": 41,
+        "avg_sm_mhz": 261.2,
+        "max_sm_mhz": 315.0,
+        "avg_power_w": 2.84,
+        "sw_power_cap_active": true,
+        "sw_thermal_active": true
+      }
+    },
+    "stream_generate_natural": {
+      "tokens": 38,
+      "model_seconds": 14.0669,
+      "wall_seconds": 14.0764,
+      "tok_per_s": 2.7,
+      "preview": "GPU adalah perangkat lunak yang digunakan untuk membuat dan mengelola data dalam berbagai format dan aplikasi. Ini terma"
+    }
+  }
+]

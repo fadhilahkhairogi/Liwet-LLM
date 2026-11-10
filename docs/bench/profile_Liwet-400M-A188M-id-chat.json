@@ -1,0 +1,197 @@
+{
+  "model": "fadhilahkhairogi/Liwet-400M-A188M-id-chat",
+  "steps": 20,
+  "total_cuda_kernels": 26380,
+  "kernels_per_token": 1319.0,
+  "wall_span_ms": 19739.22,
+  "ms_per_token": 986.96,
+  "tok_per_s": 1.01,
+  "gpu_busy_ms": 2029.07,
+  "gpu_idle_pct": 89.72,
+  "trace_file": "D:\\Fadhil\\Pelajaran\\Kuliah\\Semester_7\\GENAI\\Liwet-LLM\\docs\\bench\\trace_Liwet-400M-A188M-id-chat.json",
+  "trace_mb": 79.61,
+  "top_cpu_ops": [
+    {
+      "name": "cudaLaunchKernel",
+      "calls": 25080,
+      "self_cpu_ms": 5126.932,
+      "cuda_ms": 0.0
+    },
+    {
+      "name": "aten::mul",
+      "calls": 3840,
+      "self_cpu_ms": 853.696,
+      "cuda_ms": 38.979
+    },
+    {
+      "name": "aten::mm",
+      "calls": 1940,
+      "self_cpu_ms": 784.514,
+      "cuda_ms": 976.628
+    },
+    {
+      "name": "aten::add",
+      "calls": 3840,
+      "self_cpu_ms": 659.715,
+      "cuda_ms": 58.097
+    },
+    {
+      "name": "aten::empty",
+      "calls": 7760,
+      "self_cpu_ms": 611.067,
+      "cuda_ms": 0.0
+    },
+    {
+      "name": "aten::bmm",
+      "calls": 1280,
+      "self_cpu_ms": 601.954,
+      "cuda_ms": 104.128
+    },
+    {
+      "name": "aten::cat",
+      "calls": 3200,
+      "self_cpu_ms": 537.206,
+      "cuda_ms": 51.013
+    },
+    {
+      "name": "cuLaunchKernel",
+      "calls": 1300,
+      "self_cpu_ms": 358.285,
+      "cuda_ms": 0.0
+    },
+    {
+      "name": "aten::copy_",
+      "calls": 3200,
+      "self_cpu_ms": 352.863,
+      "cuda_ms": 42.443
+    },
+    {
+      "name": "aten::index",
+      "calls": 1320,
+      "self_cpu_ms": 313.868,
+      "cuda_ms": 555.616
+    },
+    {
+      "name": "aten::as_strided",
+      "calls": 25780,
+      "self_cpu_ms": 288.429,
+      "cuda_ms": 0.0
+    },
+    {
+      "name": "aten::_fused_rms_norm",
+      "calls": 1300,
+      "self_cpu_ms": 282.376,
+      "cuda_ms": 40.037
+    },
+    {
+      "name": "aten::neg",
+      "calls": 1280,
+      "self_cpu_ms": 280.898,
+      "cuda_ms": 12.008
+    },
+    {
+      "name": "aten::repeat",
+      "calls": 640,
+      "self_cpu_ms": 251.475,
+      "cuda_ms": 0.0
+    },
+    {
+      "name": "aten::gather",
+      "calls": 640,
+      "self_cpu_ms": 241.088,
+      "cuda_ms": 6.855
+    }
+  ],
+  "top_cuda_ops": [
+    {
+      "name": "aten::mm",
+      "calls": 1940,
+      "self_cuda_ms": 976.628,
+      "self_cpu_ms": 784.514
+    },
+    {
+      "name": "_ZN8internal5gemvx6kernelIii13__nv_bfloat16S2_S2_fLb0ELb1ELb1ELb0ELi7ELb0E18cublasGemvParamsExIi30cublasGemvTensorStridedBatchedIKS2_ES6_S4_IS2_EfEEENSt9enable_ifIXntT5_EvE4typeET11_",
+      "calls": 1920,
+      "self_cuda_ms": 687.24,
+      "self_cpu_ms": 0.0
+    },
+    {
+      "name": "aten::index",
+      "calls": 1320,
+      "self_cuda_ms": 555.616,
+      "self_cpu_ms": 313.868
+    },
+    {
+      "name": "_ZN2at6native24vectorized_gather_kernelILi16ExEEvPcS2_PT0_ixxxxb",
+      "calls": 1280,
+      "self_cuda_ms": 555.054,
+      "self_cpu_ms": 0.0
+    },
+    {
+      "name": "_ZN7cutlass7Kernel2I68cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_32x32_128x1_tn_align8EEvNT_6ParamsE",
+      "calls": 20,
+      "self_cuda_ms": 289.388,
+      "self_cpu_ms": 0.0
+    },
+    {
+      "name": "aten::bmm",
+      "calls": 1280,
+      "self_cuda_ms": 104.128,
+      "self_cpu_ms": 601.954
+    },
+    {
+      "name": "_ZN7cutlass7Kernel2I67cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_32x32_64x1_nn_align8EEvNT_6ParamsE",
+      "calls": 640,
+      "self_cuda_ms": 66.4,
+      "self_cpu_ms": 0.0
+    },
+    {
+      "name": "aten::add",
+      "calls": 3840,
+      "self_cuda_ms": 58.097,
+      "self_cpu_ms": 659.715
+    },
+    {
+      "name": "aten::cat",
+      "calls": 3200,
+      "self_cuda_ms": 51.013,
+      "self_cpu_ms": 537.206
+    },
+    {
+      "name": "aten::_efficient_attention_forward",
+      "calls": 640,
+      "self_cuda_ms": 50.852,
+      "self_cpu_ms": 125.817
+    },
+    {
+      "name": "_Z40fmha_cutlassF_bf16_aligned_64x64_rf_sm80N22PyTorchMemEffAttention15AttentionKernelIN7cutlass10bfloat16_tENS1_4arch4Sm80ELb1ELi64ELi64ELi64ELb1ELb1EE6ParamsE",
+      "calls": 640,
+      "self_cuda_ms": 50.852,
+      "self_cpu_ms": 0.0
+    },
+    {
+      "name": "aten::copy_",
+      "calls": 3200,
+      "self_cuda_ms": 42.443,
+      "self_cpu_ms": 352.863
+    },
+    {
+      "name": "aten::_fused_rms_norm",
+      "calls": 1300,
+      "self_cuda_ms": 40.037,
+      "self_cpu_ms": 282.376
+    },
+    {
+      "name": "_ZN2at6native53_GLOBAL__N__e58679f9_20_layer_norm_kernel_cu_3ff0b71f28vectorized_layer_norm_kernelIN3c108BFloat16EfLb1EEEviT0_PKT_S8_S8_PS5_S9_PS6_",
+      "calls": 1300,
+      "self_cuda_ms": 40.037,
+      "self_cpu_ms": 0.0
+    },
+    {
+      "name": "aten::mul",
+      "calls": 3840,
+      "self_cuda_ms": 38.979,
+      "self_cpu_ms": 853.696
+    }
+  ]
+}

@@ -27,6 +27,141 @@ DEFAULT_SYSTEM_PROMPT = (
 torch.set_float32_matmul_precision("high")
 
 
+def _use_fastpath() -> bool:
+    return os.environ.get("LIWET_FASTPATH", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _supports_sdpa_enable_gqa() -> bool:
+    try:
+        ver_parts = torch.__version__.split("+")[0].split(".")
+        return (int(ver_parts[0]), int(ver_parts[1])) >= (2, 5)
+    except Exception:
+        return False
+
+
+# Parity note: SDPA's enable_gqa=True dispatches to a different kernel than the
+# reference path (which expands KV heads with repeat_interleave). The kernel swap
+# changes bf16 rounding enough to flip near-tie router/argmax decisions, so the
+# fast path keeps repeat_interleave for bitwise-identical output. Opt back in with
+# LIWET_SDPA_GQA=1 only for non-parity experiments.
+_SDPA_ENABLE_GQA = _supports_sdpa_enable_gqa() and os.environ.get(
+    "LIWET_SDPA_GQA", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sdpa_attn(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attn_mask: Optional[torch.Tensor] = None,
+    is_causal: bool = False,
+    num_kv_groups: int = 1,
+) -> torch.Tensor:
+    if num_kv_groups > 1:
+        if _SDPA_ENABLE_GQA:
+            return F.scaled_dot_product_attention(
+                q, k, v, attn_mask=attn_mask, dropout_p=0.0, is_causal=is_causal, enable_gqa=True
+            )
+        k = k.repeat_interleave(num_kv_groups, dim=1)
+        v = v.repeat_interleave(num_kv_groups, dim=1)
+    return F.scaled_dot_product_attention(
+        q, k, v, attn_mask=attn_mask, dropout_p=0.0, is_causal=is_causal
+    )
+
+
+class StaticKVCache:
+    """Pre-allocated static KV-cache and mask buffers for zero-allocation / CUDA Graph decode."""
+
+    def __init__(
+        self,
+        num_layers: int,
+        num_kv_heads: int,
+        max_seq_len: int,
+        head_dim: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> None:
+        self.num_layers = num_layers
+        self.num_kv_heads = num_kv_heads
+        self.max_seq_len = max_seq_len
+        self.head_dim = head_dim
+        self.device = device
+        self.dtype = dtype
+        self.k_cache = torch.zeros(
+            (num_layers, 1, num_kv_heads, max_seq_len, head_dim),
+            dtype=dtype,
+            device=device,
+        )
+        self.v_cache = torch.zeros(
+            (num_layers, 1, num_kv_heads, max_seq_len, head_dim),
+            dtype=dtype,
+            device=device,
+        )
+        self.attn_mask = torch.full(
+            (1, 1, 1, max_seq_len),
+            float("-inf"),
+            dtype=dtype,
+            device=device,
+        )
+        self.pos_arange = torch.arange(max_seq_len, dtype=torch.long, device=device)
+
+    def reset_for_prefill(self, prompt_len: int) -> None:
+        self.attn_mask.fill_(float("-inf"))
+        if prompt_len > 0:
+            self.attn_mask[..., :prompt_len].zero_()
+
+    def open_position(self, pos: int) -> torch.Tensor:
+        self.attn_mask[..., pos : pos + 1].zero_()
+        return self.pos_arange[pos : pos + 1]
+
+
+class CudaGraphDecodeRunner:
+    """Captures single-token decode into a CUDA Graph to eliminate Python launch overhead."""
+
+    def __init__(self, model: nn.Module, cache: StaticKVCache, vocab_size: int) -> None:
+        self.model = model
+        self.cache = cache
+        self.device = cache.device
+        self.token_buf = torch.zeros((1, 1), dtype=torch.long, device=self.device)
+        self.pos_buf = torch.zeros((1,), dtype=torch.long, device=self.device)
+        self.logits_buf = torch.empty((1, vocab_size), dtype=torch.float32, device=self.device)
+        self.graph: Optional[torch.cuda.CUDAGraph] = None
+        self._capture()
+
+    def _capture(self) -> None:
+        if hasattr(self.model, "prepare_static_decode"):
+            self.model.prepare_static_decode(self.device, self.cache.dtype)
+        # Ensure at least position 0 is unmasked during warmup/capture so softmax is valid
+        self.cache.reset_for_prefill(1)
+        self.pos_buf.zero_()
+        self.token_buf.zero_()
+
+        side_stream = torch.cuda.Stream(device=self.device)
+        side_stream.wait_stream(torch.cuda.current_stream(device=self.device))
+        with torch.cuda.stream(side_stream), torch.inference_mode():
+            for _ in range(3):
+                _ = self.model.forward_decode_static(self.token_buf, self.pos_buf, self.cache)
+        torch.cuda.current_stream(device=self.device).wait_stream(side_stream)
+
+        g = torch.cuda.CUDAGraph()
+        with torch.inference_mode(), torch.cuda.graph(g):
+            out = self.model.forward_decode_static(self.token_buf, self.pos_buf, self.cache)
+            self.logits_buf.copy_(out)
+        self.graph = g
+
+    def step(self, token_1x1: torch.Tensor, pos: int) -> torch.Tensor:
+        self.token_buf.copy_(token_1x1)
+        self.pos_buf.copy_(self.cache.pos_arange[pos : pos + 1])
+        self.cache.attn_mask[..., pos : pos + 1].zero_()
+        self.graph.replay()
+        return self.logits_buf
+
+
 class ModelUnavailableError(RuntimeError):
     """Raised when a model repository has not yet been published on Hugging Face Hub."""
 
@@ -579,6 +714,77 @@ class MiniTransformer(nn.Module):
             aux_loss=None,
         )
 
+    def create_static_cache(self, device: torch.device, dtype: torch.dtype) -> StaticKVCache:
+        return StaticKVCache(
+            num_layers=self.config.n_layer,
+            num_kv_heads=self.config.n_head,
+            max_seq_len=self.config.block_size,
+            head_dim=self.config.n_embd // self.config.n_head,
+            device=device,
+            dtype=dtype,
+        )
+
+    def prepare_static_decode(self, device: torch.device, dtype: torch.dtype) -> None:
+        self._get_rope(device, dtype)
+
+    def forward_prefill_static(self, input_ids: torch.Tensor, cache: StaticKVCache) -> torch.Tensor:
+        if input_ids.shape[1] > self.config.block_size:
+            input_ids = input_ids[:, -self.config.block_size :]
+        b, seq_len = input_ids.shape
+        x = self.drop(self.tok_emb(input_ids))
+        cos, sin = self._get_rope(input_ids.device, x.dtype)
+        cos_s = cos[:seq_len].unsqueeze(0).unsqueeze(0)
+        sin_s = sin[:seq_len].unsqueeze(0).unsqueeze(0)
+        cache.reset_for_prefill(seq_len)
+        for idx, block in enumerate(self.blocks):
+            h = block.ln1(x)
+            attn = block.attn
+            c = attn.n_head * attn.head_dim
+            q, k, v = attn.qkv(h).split(c, dim=2)
+            q = q.view(b, seq_len, attn.n_head, attn.head_dim).transpose(1, 2)
+            k = k.view(b, seq_len, attn.n_head, attn.head_dim).transpose(1, 2)
+            v = v.view(b, seq_len, attn.n_head, attn.head_dim).transpose(1, 2)
+            q = (q * cos_s) + (_rotate_half(q) * sin_s)
+            k = (k * cos_s) + (_rotate_half(k) * sin_s)
+            cache.k_cache[idx, :, :, :seq_len, :].copy_(k)
+            cache.v_cache[idx, :, :, :seq_len, :].copy_(v)
+            y = _sdpa_attn(q, k, v, attn_mask=None, is_causal=(seq_len > 1), num_kv_groups=1)
+            x = x + attn.proj(y.transpose(1, 2).contiguous().view(b, seq_len, c))
+            x = x + block.mlp(block.ln2(x))
+        return self.lm_head(self.ln_f(x[:, -1:, :]))[:, 0, :].float()
+
+    def forward_decode_static(
+        self, input_ids: torch.Tensor, pos_buf: torch.Tensor, cache: StaticKVCache
+    ) -> torch.Tensor:
+        b = input_ids.shape[0]
+        x = self.drop(self.tok_emb(input_ids))
+        cos, sin = self._get_rope(input_ids.device, x.dtype)
+        cos_s = cos[pos_buf].unsqueeze(0).unsqueeze(0)
+        sin_s = sin[pos_buf].unsqueeze(0).unsqueeze(0)
+        for idx, block in enumerate(self.blocks):
+            h = block.ln1(x)
+            attn = block.attn
+            c = attn.n_head * attn.head_dim
+            q, k, v = attn.qkv(h).split(c, dim=2)
+            q = q.view(b, 1, attn.n_head, attn.head_dim).transpose(1, 2)
+            k = k.view(b, 1, attn.n_head, attn.head_dim).transpose(1, 2)
+            v = v.view(b, 1, attn.n_head, attn.head_dim).transpose(1, 2)
+            q = (q * cos_s) + (_rotate_half(q) * sin_s)
+            k = (k * cos_s) + (_rotate_half(k) * sin_s)
+            cache.k_cache[idx].index_copy_(2, pos_buf, k)
+            cache.v_cache[idx].index_copy_(2, pos_buf, v)
+            y = _sdpa_attn(
+                q,
+                cache.k_cache[idx],
+                cache.v_cache[idx],
+                attn_mask=cache.attn_mask,
+                is_causal=False,
+                num_kv_groups=1,
+            )
+            x = x + attn.proj(y.transpose(1, 2).contiguous().view(b, 1, c))
+            x = x + block.mlp(block.ln2(x))
+        return self.lm_head(self.ln_f(x))[:, 0, :].float()
+
 
 # ---------------------------------------------------------------------------
 # Family 2 & 3: Dense 163M (GQA + qkv_proj) & MoE 400M-A188M (GQA + q/k/v_proj)
@@ -818,6 +1024,87 @@ class DenseIndonesianChatLM(nn.Module):
             past_key_values=tuple(presents) if use_cache else None,
             aux_loss=None,
         )
+
+    def create_static_cache(self, device: torch.device, dtype: torch.dtype) -> StaticKVCache:
+        return StaticKVCache(
+            num_layers=self.config.num_hidden_layers,
+            num_kv_heads=self.config.num_key_value_heads,
+            max_seq_len=self.config.max_position_embeddings,
+            head_dim=self.config.head_dim,
+            device=device,
+            dtype=dtype,
+        )
+
+    def prepare_static_decode(self, device: torch.device, dtype: torch.dtype) -> None:
+        self.rotary_emb.ensure_size(self.config.max_position_embeddings, device)
+        self._rope_d_cache = (
+            self.rotary_emb.cos_cached.to(device=device, dtype=dtype),
+            self.rotary_emb.sin_cached.to(device=device, dtype=dtype),
+        )
+
+    def _get_rope_d(self, device: torch.device, dtype: torch.dtype) -> Tuple[torch.Tensor, torch.Tensor]:
+        pair = getattr(self, "_rope_d_cache", None)
+        if pair is None or pair[0].device != device or pair[0].dtype != dtype:
+            self.prepare_static_decode(device, dtype)
+            pair = self._rope_d_cache
+        return pair
+
+    def forward_prefill_static(self, input_ids: torch.Tensor, cache: StaticKVCache) -> torch.Tensor:
+        b, seq_len = input_ids.shape
+        hidden_states = self.embed_tokens(input_ids)
+        cos_t, sin_t = self._get_rope_d(input_ids.device, hidden_states.dtype)
+        cos_s = cos_t[:seq_len].unsqueeze(0).unsqueeze(0)
+        sin_s = sin_t[:seq_len].unsqueeze(0).unsqueeze(0)
+        cache.reset_for_prefill(seq_len)
+        is_causal = seq_len > 1
+        for idx, layer in enumerate(self.layers):
+            residual = hidden_states
+            h = layer.input_layernorm(hidden_states)
+            attn = layer.self_attn
+            q, k, v = attn.qkv_proj(h).split((attn.q_dim, attn.kv_dim, attn.kv_dim), dim=-1)
+            q = q.view(b, seq_len, attn.num_heads, attn.head_dim).transpose(1, 2)
+            k = k.view(b, seq_len, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
+            v = v.view(b, seq_len, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
+            q = (q * cos_s) + (_rotate_half(q) * sin_s)
+            k = (k * cos_s) + (_rotate_half(k) * sin_s)
+            cache.k_cache[idx, :, :, :seq_len, :].copy_(k)
+            cache.v_cache[idx, :, :, :seq_len, :].copy_(v)
+            out = _sdpa_attn(q, k, v, attn_mask=None, is_causal=is_causal, num_kv_groups=attn.num_kv_groups)
+            hidden_states = residual + attn.o_proj(out.transpose(1, 2).reshape(b, seq_len, -1))
+            hidden_states = hidden_states + layer.mlp(layer.post_attention_layernorm(hidden_states))
+        return self.lm_head(self.norm(hidden_states[:, -1:, :]))[:, 0, :].float()
+
+    def forward_decode_static(
+        self, input_ids: torch.Tensor, pos_buf: torch.Tensor, cache: StaticKVCache
+    ) -> torch.Tensor:
+        b = input_ids.shape[0]
+        hidden_states = self.embed_tokens(input_ids)
+        cos_t, sin_t = self._get_rope_d(input_ids.device, hidden_states.dtype)
+        cos_s = cos_t[pos_buf].unsqueeze(0).unsqueeze(0)
+        sin_s = sin_t[pos_buf].unsqueeze(0).unsqueeze(0)
+        for idx, layer in enumerate(self.layers):
+            residual = hidden_states
+            h = layer.input_layernorm(hidden_states)
+            attn = layer.self_attn
+            q, k, v = attn.qkv_proj(h).split((attn.q_dim, attn.kv_dim, attn.kv_dim), dim=-1)
+            q = q.view(b, 1, attn.num_heads, attn.head_dim).transpose(1, 2)
+            k = k.view(b, 1, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
+            v = v.view(b, 1, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
+            q = (q * cos_s) + (_rotate_half(q) * sin_s)
+            k = (k * cos_s) + (_rotate_half(k) * sin_s)
+            cache.k_cache[idx].index_copy_(2, pos_buf, k)
+            cache.v_cache[idx].index_copy_(2, pos_buf, v)
+            out = _sdpa_attn(
+                q,
+                cache.k_cache[idx],
+                cache.v_cache[idx],
+                attn_mask=cache.attn_mask,
+                is_causal=False,
+                num_kv_groups=attn.num_kv_groups,
+            )
+            hidden_states = residual + attn.o_proj(out.transpose(1, 2).reshape(b, 1, -1))
+            hidden_states = hidden_states + layer.mlp(layer.post_attention_layernorm(hidden_states))
+        return self.lm_head(self.norm(hidden_states))[:, 0, :].float()
 
 
 class MoE(nn.Module):
@@ -1103,6 +1390,93 @@ class MoEIndonesianChatLM(nn.Module):
             aux_loss=None,
         )
 
+    def create_static_cache(self, device: torch.device, dtype: torch.dtype) -> StaticKVCache:
+        return StaticKVCache(
+            num_layers=self.config.num_hidden_layers,
+            num_kv_heads=self.config.num_key_value_heads,
+            max_seq_len=self.config.max_position_embeddings,
+            head_dim=self.config.head_dim,
+            device=device,
+            dtype=dtype,
+        )
+
+    def prepare_static_decode(self, device: torch.device, dtype: torch.dtype) -> None:
+        self._rotary_embeddings(torch.zeros((1, 1), dtype=torch.long, device=device), dtype)
+        for layer in self.layers:
+            layer.self_attn._static_qkv_w = layer.self_attn._fused_qkv_weight()
+
+    def forward_prefill_static(self, input_ids: torch.Tensor, cache: StaticKVCache) -> torch.Tensor:
+        if input_ids.shape[1] > self.config.max_position_embeddings:
+            input_ids = input_ids[:, -self.config.max_position_embeddings :]
+        b, q_len = input_ids.shape
+        hidden_states = self.embed_tokens(input_ids)
+        self._rotary_embeddings(
+            torch.zeros((1, 1), dtype=torch.long, device=input_ids.device), hidden_states.dtype
+        )
+        table = self._rope_table
+        cos_d = table["cos"][:q_len].unsqueeze(0).unsqueeze(0)
+        sin_d = table["sin"][:q_len].unsqueeze(0).unsqueeze(0)
+        cache.reset_for_prefill(q_len)
+        is_causal = q_len > 1
+        for idx, layer in enumerate(self.layers):
+            residual = hidden_states
+            h = layer.input_layernorm(hidden_states)
+            attn = layer.self_attn
+            q_dim = attn.num_heads * attn.head_dim
+            kv_dim = attn.num_key_value_heads * attn.head_dim
+            qkv_w = getattr(attn, "_static_qkv_w", None)
+            if qkv_w is None:
+                qkv_w = attn._fused_qkv_weight()
+            q, k, v = torch.split(F.linear(h, qkv_w), [q_dim, kv_dim, kv_dim], dim=-1)
+            q = q.view(b, q_len, attn.num_heads, attn.head_dim).transpose(1, 2)
+            k = k.view(b, q_len, attn.num_key_value_heads, attn.head_dim).transpose(1, 2)
+            v = v.view(b, q_len, attn.num_key_value_heads, attn.head_dim).transpose(1, 2)
+            q = (q * cos_d) + (_rotate_half(q) * sin_d)
+            k = (k * cos_d) + (_rotate_half(k) * sin_d)
+            cache.k_cache[idx, :, :, :q_len, :].copy_(k)
+            cache.v_cache[idx, :, :, :q_len, :].copy_(v)
+            groups = attn.num_heads // attn.num_key_value_heads
+            out = _sdpa_attn(q, k, v, attn_mask=None, is_causal=is_causal, num_kv_groups=groups)
+            hidden_states = residual + attn.o_proj(out.transpose(1, 2).reshape(b, q_len, attn.hidden_size))
+            hidden_states = hidden_states + layer.mlp(layer.post_attention_layernorm(hidden_states))
+        return self.lm_head(self.norm(hidden_states[:, -1:, :]))[:, 0, :].float()
+
+    def forward_decode_static(
+        self, input_ids: torch.Tensor, pos_buf: torch.Tensor, cache: StaticKVCache
+    ) -> torch.Tensor:
+        b = input_ids.shape[0]
+        hidden_states = self.embed_tokens(input_ids)
+        table = self._rope_table
+        cos_d = table["cos"][pos_buf].unsqueeze(0).unsqueeze(0)
+        sin_d = table["sin"][pos_buf].unsqueeze(0).unsqueeze(0)
+        for idx, layer in enumerate(self.layers):
+            residual = hidden_states
+            h = layer.input_layernorm(hidden_states)
+            attn = layer.self_attn
+            q_dim = attn.num_heads * attn.head_dim
+            kv_dim = attn.num_key_value_heads * attn.head_dim
+            qkv_w = attn._static_qkv_w
+            q, k, v = torch.split(F.linear(h, qkv_w), [q_dim, kv_dim, kv_dim], dim=-1)
+            q = q.view(b, 1, attn.num_heads, attn.head_dim).transpose(1, 2)
+            k = k.view(b, 1, attn.num_key_value_heads, attn.head_dim).transpose(1, 2)
+            v = v.view(b, 1, attn.num_key_value_heads, attn.head_dim).transpose(1, 2)
+            q = (q * cos_d) + (_rotate_half(q) * sin_d)
+            k = (k * cos_d) + (_rotate_half(k) * sin_d)
+            cache.k_cache[idx].index_copy_(2, pos_buf, k)
+            cache.v_cache[idx].index_copy_(2, pos_buf, v)
+            groups = attn.num_heads // attn.num_key_value_heads
+            out = _sdpa_attn(
+                q,
+                cache.k_cache[idx],
+                cache.v_cache[idx],
+                attn_mask=cache.attn_mask,
+                is_causal=False,
+                num_kv_groups=groups,
+            )
+            hidden_states = residual + attn.o_proj(out.transpose(1, 2).reshape(b, 1, attn.hidden_size))
+            hidden_states = hidden_states + layer.mlp(layer.post_attention_layernorm(hidden_states))
+        return self.lm_head(self.norm(hidden_states))[:, 0, :].float()
+
 
 # ---------------------------------------------------------------------------
 # Unified Loading, Caching, Formatting & Streaming
@@ -1121,11 +1495,58 @@ class LiwetBundle:
     active_params: int
     context_len: int
     lock: threading.Lock
+    static_cache: Optional[StaticKVCache] = None
+    decode_runner: Optional[CudaGraphDecodeRunner] = None
 
 
 _BUNDLE_CACHE: "OrderedDict[Tuple[str, str, str], LiwetBundle]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()
 MAX_CACHED_BUNDLES = 2
+_CPU_THREADS_CONFIGURED = False
+
+
+def _physical_cpu_count() -> int:
+    env_val = os.environ.get("LIWET_CPU_THREADS", "").strip()
+    if env_val.isdigit() and int(env_val) > 0:
+        return int(env_val)
+    try:
+        import psutil  # type: ignore
+
+        phys = psutil.cpu_count(logical=False)
+        if phys and phys > 0:
+            return int(phys)
+    except Exception:
+        pass
+    try:
+        cpuinfo = Path("/proc/cpuinfo")
+        if cpuinfo.exists():
+            pairs = set()
+            phys_id = "0"
+            for line in cpuinfo.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.startswith("physical id"):
+                    phys_id = line.split(":", 1)[1].strip()
+                elif line.startswith("core id"):
+                    pairs.add((phys_id, line.split(":", 1)[1].strip()))
+            if pairs:
+                return len(pairs)
+    except Exception:
+        pass
+    logical = os.cpu_count() or 4
+    return max(1, min(8, logical if logical <= 4 else max(4, (logical * 2) // 3)))
+
+
+def _configure_cpu_threads() -> None:
+    global _CPU_THREADS_CONFIGURED
+    if _CPU_THREADS_CONFIGURED or not _use_fastpath():
+        return
+    threads = _physical_cpu_count()
+    if torch.get_num_threads() != threads:
+        torch.set_num_threads(threads)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+    _CPU_THREADS_CONFIGURED = True
 
 
 def resolve_device(choice: str = "auto") -> torch.device:
@@ -1245,6 +1666,8 @@ def load_liwet_model(
     device = resolve_device(device_name)
     if device.type == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = True
+    else:
+        _configure_cpu_threads()
     dtype = resolve_dtype(dtype_name, device)
     cache_key = (repo_id, str(device), str(dtype))
 
@@ -1283,6 +1706,8 @@ def load_liwet_model(
         _BUNDLE_CACHE.move_to_end(cache_key)
         while len(_BUNDLE_CACHE) > MAX_CACHED_BUNDLES:
             _, evicted = _BUNDLE_CACHE.popitem(last=False)
+            evicted.decode_runner = None
+            evicted.static_cache = None
             del evicted
             gc.collect()
             if torch.cuda.is_available():
@@ -1293,6 +1718,9 @@ def load_liwet_model(
 
 def clear_model_cache() -> None:
     with _CACHE_LOCK:
+        for b in _BUNDLE_CACHE.values():
+            b.decode_runner = None
+            b.static_cache = None
         _BUNDLE_CACHE.clear()
     gc.collect()
     if torch.cuda.is_available():
@@ -1389,6 +1817,170 @@ def _clean_reply(text: str, prompt_mode: str) -> str:
     return text.strip()
 
 
+def _get_static_decode_artifacts(
+    bundle: LiwetBundle, want_cuda_graph: bool = True
+) -> Tuple[StaticKVCache, Optional[CudaGraphDecodeRunner]]:
+    try:
+        param_dev = next(bundle.model.parameters()).device
+        if param_dev != bundle.device:
+            bundle.device = param_dev
+            bundle.decode_runner = None
+            bundle.static_cache = None
+    except StopIteration:
+        pass
+
+    cache = bundle.static_cache
+    if cache is None or cache.device != bundle.device or cache.dtype != bundle.dtype:
+        cache = bundle.model.create_static_cache(bundle.device, bundle.dtype)
+        bundle.static_cache = cache
+        bundle.decode_runner = None
+
+    if hasattr(bundle.model, "prepare_static_decode"):
+        bundle.model.prepare_static_decode(bundle.device, bundle.dtype)
+
+    runner = bundle.decode_runner
+    if (
+        want_cuda_graph
+        and bundle.device.type == "cuda"
+        and os.environ.get("LIWET_DISABLE_CUDA_GRAPH", "0").strip() != "1"
+    ):
+        if runner is None or runner.device != bundle.device:
+            try:
+                vocab_size = int(bundle.model.config.vocab_size)
+                runner = CudaGraphDecodeRunner(bundle.model, cache, vocab_size)
+                bundle.decode_runner = runner
+            except Exception as err:
+                print(
+                    f"[liwet] Peringatan: CUDA Graph capture gagal untuk {bundle.repo_id} "
+                    f"({type(err).__name__}: {err}); beralih ke static eager decode."
+                )
+                runner = None
+                bundle.decode_runner = None
+    else:
+        runner = None
+    return cache, runner
+
+
+def _apply_rep_penalty_mask(
+    logits: torch.Tensor, seen_mask: Optional[torch.Tensor], repetition_penalty: float
+) -> torch.Tensor:
+    if seen_mask is None or repetition_penalty == 1.0:
+        return logits
+    row = logits[0]
+    penalized = torch.where(row > 0, row / repetition_penalty, row * repetition_penalty)
+    return torch.where(seen_mask, penalized, row).unsqueeze(0)
+
+
+def _sample_next_token(
+    logits: torch.Tensor,
+    sampling: bool,
+    temperature: float,
+    top_k: int,
+    top_p: float,
+) -> torch.Tensor:
+    if not sampling:
+        return torch.argmax(logits, dim=-1, keepdim=True)
+    temp = max(float(temperature), 1e-5)
+    logits = logits / temp
+    if top_k is not None and int(top_k) > 0:
+        k = min(int(top_k), logits.size(-1))
+        kth = torch.topk(logits, k, dim=-1).values[:, -1:]
+        logits = logits.masked_fill(logits < kth, float("-inf"))
+    if top_p is not None and 0.0 < float(top_p) < 1.0:
+        sorted_logits, sorted_idx = torch.sort(logits, descending=True, dim=-1)
+        sorted_probs = torch.softmax(sorted_logits, dim=-1)
+        remove = sorted_probs.cumsum(dim=-1) - sorted_probs > float(top_p)
+        sorted_logits = sorted_logits.masked_fill(remove, float("-inf"))
+        logits = torch.full_like(logits, float("-inf")).scatter(
+            dim=-1, index=sorted_idx, src=sorted_logits
+        )
+    probs = torch.softmax(logits, dim=-1)
+    return torch.multinomial(probs, num_samples=1)
+
+
+def prefill_once(bundle: LiwetBundle, input_ids: torch.Tensor) -> torch.Tensor:
+    with bundle.lock, torch.inference_mode():
+        if _use_fastpath() and hasattr(bundle.model, "forward_prefill_static"):
+            cache, _ = _get_static_decode_artifacts(bundle, want_cuda_graph=False)
+            return bundle.model.forward_prefill_static(input_ids, cache)
+        out = bundle.model.forward(input_ids, past_key_values=None, use_cache=False)
+        return out.logits[:, -1, :].float()
+
+
+def greedy_token_ids(
+    bundle: LiwetBundle,
+    prompt_ids: List[int],
+    steps: int = 128,
+    repetition_penalty: float = 1.0,
+) -> List[int]:
+    if steps <= 0:
+        return []
+    toks: List[int] = []
+    if not _use_fastpath() or not hasattr(bundle.model, "forward_prefill_static"):
+        with bundle.lock, torch.inference_mode():
+            inp = torch.tensor([prompt_ids], dtype=torch.long, device=bundle.device)
+            out = bundle.model.forward(inp, past_key_values=None, use_cache=True)
+            pkv = out.past_key_values
+            logits = out.logits[:, -1, :].float()
+            seen = inp.view(-1).clone()
+            for step_idx in range(steps):
+                adj = logits.clone()
+                if repetition_penalty != 1.0 and seen.numel() > 0:
+                    uniq = torch.unique(seen)
+                    vals = adj[0, uniq]
+                    adj[0, uniq] = torch.where(
+                        vals > 0, vals / repetition_penalty, vals * repetition_penalty
+                    )
+                nxt = torch.argmax(adj, dim=-1, keepdim=True)
+                tok = int(nxt.item())
+                toks.append(tok)
+                if step_idx + 1 < steps:
+                    seen = torch.cat([seen, nxt.view(-1)])
+                    out = bundle.model.forward(nxt, past_key_values=pkv, use_cache=True)
+                    pkv = out.past_key_values
+                    logits = out.logits[:, -1, :].float()
+        return toks
+
+    with bundle.lock, torch.inference_mode():
+        cache, runner = _get_static_decode_artifacts(bundle, want_cuda_graph=True)
+        if len(prompt_ids) > cache.max_seq_len:
+            prompt_ids = prompt_ids[-cache.max_seq_len :]
+        inp = torch.tensor([prompt_ids], dtype=torch.long, device=bundle.device)
+        logits = bundle.model.forward_prefill_static(inp, cache)
+        seen_mask: Optional[torch.Tensor] = None
+        if repetition_penalty != 1.0:
+            seen_mask = torch.zeros(
+                int(bundle.model.config.vocab_size), dtype=torch.bool, device=bundle.device
+            )
+            seen_mask[inp[0]] = True
+        pos = len(prompt_ids)
+        for step_idx in range(steps):
+            adj = _apply_rep_penalty_mask(logits, seen_mask, repetition_penalty)
+            nxt = torch.argmax(adj, dim=-1, keepdim=True)
+            tok = int(nxt.item())
+            toks.append(tok)
+            if step_idx + 1 >= steps or pos >= cache.max_seq_len:
+                break
+            if seen_mask is not None:
+                seen_mask[tok] = True
+            if runner is not None:
+                try:
+                    logits = runner.step(nxt, pos)
+                except Exception:
+                    bundle.decode_runner = None
+                    runner = None
+                    pos_buf = cache.open_position(pos)
+                    logits = bundle.model.forward_decode_static(nxt, pos_buf, cache)
+            else:
+                pos_buf = cache.open_position(pos)
+                logits = bundle.model.forward_decode_static(nxt, pos_buf, cache)
+            pos += 1
+    return toks
+
+
+_CHAT_ROLE_MARKERS = ("\n\nUser:", "\n\nSystem:", "\nUser:", "\nSystem:")
+
+
 def stream_generate(
     bundle: LiwetBundle,
     prompt_text: str,
@@ -1406,94 +1998,222 @@ def stream_generate(
 
     ids, truncated = _encode_prompt(bundle, prompt_text, max_new_tokens)
     prompt_tokens = len(ids)
-    max_total = prompt_tokens + max(0, int(max_new_tokens))
-    token_buffer = torch.empty(
-        (1, max_total), dtype=torch.long, device=bundle.device
-    )
-    token_buffer[0, :prompt_tokens] = torch.tensor(
-        ids, dtype=torch.long, device=bundle.device
-    )
-    length = prompt_tokens
+    max_new = max(0, int(max_new_tokens))
     stop_ids = _stop_token_ids(bundle.tokenizer)
     generated_ids: List[int] = []
     previous_text = ""
-    past_key_values = None
-
     sampling = do_sample if do_sample is not None else float(temperature) > 0.0
 
-    if bundle.device.type == "cuda":
-        torch.cuda.synchronize()
-    started = time.perf_counter()
+    if not _use_fastpath() or not hasattr(bundle.model, "forward_prefill_static"):
+        max_total = prompt_tokens + max_new
+        token_buffer = torch.empty(
+            (1, max_total), dtype=torch.long, device=bundle.device
+        )
+        token_buffer[0, :prompt_tokens] = torch.tensor(
+            ids, dtype=torch.long, device=bundle.device
+        )
+        length = prompt_tokens
+        past_key_values = None
+
+        if bundle.device.type == "cuda":
+            torch.cuda.synchronize()
+        started = time.perf_counter()
+
+        with bundle.lock, torch.inference_mode():
+            if seed is not None:
+                torch.manual_seed(int(seed))
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(int(seed))
+
+            for _ in range(max_new):
+                current_ids = (
+                    token_buffer[:, :length]
+                    if past_key_values is None
+                    else token_buffer[:, length - 1 : length]
+                )
+                output = bundle.model.forward(
+                    current_ids, past_key_values=past_key_values, use_cache=True
+                )
+                past_key_values = output.past_key_values
+                logits = output.logits[:, -1, :].float()
+
+                if repetition_penalty != 1.0:
+                    token_ids = torch.unique(token_buffer[0, :length])
+                    token_logits = logits[0, token_ids]
+                    logits[0, token_ids] = torch.where(
+                        token_logits > 0,
+                        token_logits / repetition_penalty,
+                        token_logits * repetition_penalty,
+                    )
+
+                next_token = _sample_next_token(
+                    logits, sampling, temperature, top_k, top_p
+                )
+                token_id = int(next_token.item())
+                if token_id in stop_ids:
+                    break
+
+                token_buffer[0, length] = next_token[0, 0]
+                length += 1
+                generated_ids.append(token_id)
+
+                raw_text = bundle.tokenizer.decode(generated_ids, skip_special_tokens=True)
+                clean_text = _clean_reply(raw_text, bundle.spec.prompt_mode)
+                if clean_text != previous_text:
+                    previous_text = clean_text
+                    yield clean_text
+
+                if bundle.spec.prompt_mode == "chat_role" and any(
+                    m in raw_text for m in _CHAT_ROLE_MARKERS
+                ):
+                    break
+
+        if bundle.device.type == "cuda":
+            torch.cuda.synchronize()
+        seconds = max(time.perf_counter() - started, 1e-6)
+        if stats is not None:
+            stats.update(
+                {
+                    "text": previous_text,
+                    "prompt_tokens": prompt_tokens,
+                    "generated_tokens": len(generated_ids),
+                    "seconds": seconds,
+                    "wall_seconds": seconds,
+                    "tokens_per_second": len(generated_ids) / seconds,
+                    "truncated": truncated,
+                }
+            )
+        return
+
+    wall_started = time.perf_counter()
+    model_seconds = 0.0
+    debug_decode = os.environ.get("LIWET_DEBUG_DECODE", "0").strip() == "1"
 
     with bundle.lock, torch.inference_mode():
+        cache, runner = _get_static_decode_artifacts(bundle, want_cuda_graph=True)
+        if prompt_tokens > cache.max_seq_len:
+            ids = ids[-cache.max_seq_len :]
+            prompt_tokens = len(ids)
+            truncated = True
+
         if seed is not None:
             torch.manual_seed(int(seed))
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(int(seed))
 
-        for _ in range(int(max_new_tokens)):
-            current_ids = (
-                token_buffer[:, :length]
-                if past_key_values is None
-                else token_buffer[:, length - 1 : length]
-            )
-            output = bundle.model.forward(
-                current_ids, past_key_values=past_key_values, use_cache=True
-            )
-            past_key_values = output.past_key_values
-            logits = output.logits[:, -1, :].float()
+        if bundle.device.type == "cuda":
+            torch.cuda.synchronize()
+        t_slice = time.perf_counter()
 
-            if repetition_penalty != 1.0:
-                token_ids = torch.unique(token_buffer[0, :length])
-                token_logits = logits[0, token_ids]
-                logits[0, token_ids] = torch.where(
-                    token_logits > 0,
-                    token_logits / repetition_penalty,
-                    token_logits * repetition_penalty,
+        inp = torch.tensor([ids], dtype=torch.long, device=bundle.device)
+        seen_mask: Optional[torch.Tensor] = None
+        if repetition_penalty != 1.0:
+            seen_mask = torch.zeros(
+                int(bundle.model.config.vocab_size), dtype=torch.bool, device=bundle.device
+            )
+            seen_mask[inp[0]] = True
+
+        stable_idx = 0
+        stable_prefix = ""
+
+        if max_new > 0:
+            logits = bundle.model.forward_prefill_static(inp, cache)
+            pos = prompt_tokens
+
+            for step_idx in range(max_new):
+                adj = _apply_rep_penalty_mask(logits, seen_mask, repetition_penalty)
+                next_token = _sample_next_token(
+                    adj, sampling, temperature, top_k, top_p
                 )
+                token_id = int(next_token.item())
+                if token_id in stop_ids:
+                    break
 
-            if sampling:
-                temp = max(float(temperature), 1e-5)
-                logits = logits / temp
-                if top_k is not None and int(top_k) > 0:
-                    k = min(int(top_k), logits.size(-1))
-                    kth = torch.topk(logits, k, dim=-1).values[:, -1:]
-                    logits = logits.masked_fill(logits < kth, float("-inf"))
-                if top_p is not None and 0.0 < float(top_p) < 1.0:
-                    sorted_logits, sorted_idx = torch.sort(logits, descending=True, dim=-1)
-                    sorted_probs = torch.softmax(sorted_logits, dim=-1)
-                    remove = sorted_probs.cumsum(dim=-1) - sorted_probs > float(top_p)
-                    sorted_logits = sorted_logits.masked_fill(remove, float("-inf"))
-                    logits = torch.full_like(logits, float("-inf")).scatter(
-                        dim=-1, index=sorted_idx, src=sorted_logits
+                generated_ids.append(token_id)
+                if seen_mask is not None:
+                    seen_mask[token_id] = True
+
+                # Incremental detokenization on clean UTF-8 / non-marker boundaries
+                tail = bundle.tokenizer.decode(
+                    generated_ids[stable_idx:], skip_special_tokens=True
+                )
+                raw_text = stable_prefix + tail
+                if len(generated_ids) - stable_idx >= 32:
+                    probe = len(generated_ids) - 12
+                    seg = bundle.tokenizer.decode(
+                        generated_ids[stable_idx:probe], skip_special_tokens=True
                     )
-                probs = torch.softmax(logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-            else:
-                next_token = torch.argmax(logits, dim=-1, keepdim=True)
+                    tail_cand = bundle.tokenizer.decode(
+                        generated_ids[probe:], skip_special_tokens=True
+                    )
+                    can_commit = (
+                        "\ufffd" not in seg
+                        and "\ufffd" not in tail_cand
+                        and bool(stable_prefix or seg.strip())
+                        and len(seg) >= 16
+                        and ("\n" not in seg[-16:])
+                        and ("<" not in seg[-16:])
+                    )
+                    if can_commit:
+                        if debug_decode:
+                            full_chk = bundle.tokenizer.decode(
+                                generated_ids, skip_special_tokens=True
+                            )
+                            assert stable_prefix + seg + tail_cand == full_chk, (
+                                "Incremental decode mismatch"
+                            )
+                        stable_prefix = stable_prefix + seg
+                        stable_idx = probe
+                        raw_text = stable_prefix + tail_cand
 
-            token_id = int(next_token.item())
-            if token_id in stop_ids:
-                break
+                clean_text = _clean_reply(raw_text, bundle.spec.prompt_mode)
+                if clean_text != previous_text:
+                    previous_text = clean_text
+                    model_seconds += time.perf_counter() - t_slice
+                    yield clean_text
+                    t_slice = time.perf_counter()
 
-            token_buffer[0, length] = next_token[0, 0]
-            length += 1
-            generated_ids.append(token_id)
+                if bundle.spec.prompt_mode == "chat_role":
+                    recent = raw_text[-64:]
+                    if any(m in recent for m in _CHAT_ROLE_MARKERS):
+                        break
 
-            raw_text = bundle.tokenizer.decode(generated_ids, skip_special_tokens=True)
-            clean_text = _clean_reply(raw_text, bundle.spec.prompt_mode)
-            if clean_text != previous_text:
-                previous_text = clean_text
-                yield clean_text
+                if step_idx + 1 >= max_new or pos >= cache.max_seq_len:
+                    break
 
-            if bundle.spec.prompt_mode == "chat_role" and any(
-                m in raw_text for m in ("\n\nUser:", "\n\nSystem:", "\nUser:", "\nSystem:")
-            ):
-                break
+                if runner is not None:
+                    try:
+                        logits = runner.step(next_token, pos)
+                    except Exception as err:
+                        print(
+                            f"[liwet] Peringatan: CUDA Graph replay gagal "
+                            f"({type(err).__name__}); fallback static eager."
+                        )
+                        bundle.decode_runner = None
+                        runner = None
+                        pos_buf = cache.open_position(pos)
+                        logits = bundle.model.forward_decode_static(next_token, pos_buf, cache)
+                else:
+                    pos_buf = cache.open_position(pos)
+                    logits = bundle.model.forward_decode_static(next_token, pos_buf, cache)
+                pos += 1
 
-    if bundle.device.type == "cuda":
-        torch.cuda.synchronize()
-    seconds = max(time.perf_counter() - started, 1e-6)
+        # Guarantee exact full decode on final answer
+        if generated_ids:
+            final_raw = bundle.tokenizer.decode(generated_ids, skip_special_tokens=True)
+            final_clean = _clean_reply(final_raw, bundle.spec.prompt_mode)
+            if final_clean != previous_text:
+                previous_text = final_clean
+                model_seconds += time.perf_counter() - t_slice
+                yield final_clean
+                t_slice = time.perf_counter()
+
+        if bundle.device.type == "cuda":
+            torch.cuda.synchronize()
+        model_seconds += time.perf_counter() - t_slice
+
+    seconds = max(model_seconds, 1e-6)
+    wall_seconds = max(time.perf_counter() - wall_started, 1e-6)
     if stats is not None:
         stats.update(
             {
@@ -1501,6 +2221,7 @@ def stream_generate(
                 "prompt_tokens": prompt_tokens,
                 "generated_tokens": len(generated_ids),
                 "seconds": seconds,
+                "wall_seconds": wall_seconds,
                 "tokens_per_second": len(generated_ids) / seconds,
                 "truncated": truncated,
             }
@@ -1600,6 +2321,10 @@ def load_liwet_local(
         raise FileNotFoundError(f"Bobot model tidak ditemukan di {ckpt_path}")
 
     device = resolve_device(device_name)
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+    else:
+        _configure_cpu_threads()
     dtype = resolve_dtype(dtype_name, device)
     cache_key = (f"local::{ckpt_path}", str(device), str(dtype))
     with _CACHE_LOCK:
@@ -1666,6 +2391,8 @@ def load_liwet_local(
         _BUNDLE_CACHE.move_to_end(cache_key)
         while len(_BUNDLE_CACHE) > MAX_CACHED_BUNDLES:
             _, evicted = _BUNDLE_CACHE.popitem(last=False)
+            evicted.decode_runner = None
+            evicted.static_cache = None
             del evicted
             gc.collect()
             if torch.cuda.is_available():
