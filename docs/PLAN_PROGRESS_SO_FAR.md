@@ -1,7 +1,7 @@
 # Plan Progress So Far — Liwet-LLM Inference Optimization
 
 > **Terakhir Diperbarui:** `2026-11-11` (Tahap akhir selesai: 11 varian × 3 quant, staging `-GGUF`, klon web, Ollama, laporan final + retest fp32 400M base; **11 repo `-GGUF` sudah diunggah & terverifikasi di HF Hub**)  
-> **Estimasi Progres Total:** **~98% Selesai** (sisa hanya Space/deploy yang belum diizinkan)  
+> **Estimasi Progres Total:** **~99% Selesai** (deploy Space selesai; sisa verifikasi build GGUF MoE + opsi Admin DTT)  
 > **Spesifikasi Rencana:** [INFERENCE_OPTIMIZATION_PLAN.md](INFERENCE_OPTIMIZATION_PLAN.md)  
 > **Konteks Detail & Diagnosis Sesi Sebelumnya:** [PREVIOUS_AGENT_SESSION.md](PREVIOUS_AGENT_SESSION.md)  
 > **Data Benchmark & Profiler:** [bench/RESULTS.md](bench/RESULTS.md)
@@ -99,5 +99,5 @@
 ### Tersisa — tindakan pemilik
 - [x] Izin eksplisit unggah 11 repo `-GGUF` ke HF Hub diberikan **2026-11-11**; **selesai** — 11 repo `fadhilahkhairogi/<Model>-GGUF` dibuat, 44/44 file diverifikasi cocok ukurannya, README ter-render (LF-only).
 - [x] Status publik **400M `base`**: retest fp32 dijalankan → dipublikasikan sebagai **eksperimental** (top-1 tetap <95%, referensi bf16 terbukti tidak stabil).
-- [ ] Pembuatan/deploy Space **belum** diizinkan.
+- [x] **2026-11-11:** Space lama `fadhilahkhairogi/mini-transformer-id` diperbarui — backend GGUF-first + fallback PyTorch per model (`LIWET_BACKEND`, `LIWET_GGUF_*`), UI `app.py` identik kecuali satu baris impor, tanpa Space baru. Dense 66M/163M live memakai GGUF (`CPU q8_0`); MoE 400M memakai fork `liwet-moe` (sedang dibangun sebagai wheel CPU di Space) atau fallback torch selama build.
 - [ ] (Opsional) Jalankan skrip Administrator Intel DTT — hanya boleh oleh pemilik.

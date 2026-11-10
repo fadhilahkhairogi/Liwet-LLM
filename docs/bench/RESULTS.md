@@ -288,7 +288,7 @@ CPU BF16 (3 rep, informatif): 66M 152.8 ± 31.1, 163M 75.2 ± 19.2, 400M 27.1 ±
 
 **Kesimpulan:** Gate B3 **lulus untuk dense 66M/163M** pada P1/P2-norep/P4 (P2-defrep 163M gagal huruf ambang karena tie bf16 referensi, terdokumentasi), dan **lulus dengan kriteria khusus MoE** yang disetujui pemilik untuk 400M BF16/F16 (Q8_0 dilaporkan). Tidak ada klaim bit-parity untuk 400M. Artefak mentah ada di [gguf_b3/](gguf_b3/) (`gateB3_*.json`, `bench_final_*.json`, `bench_stab_*.json`; salinan asli di `E:\liwet_gguf_build\scratch\`).
 
-**Tindak lanjut yang disetujui:** lanjut ke tahap akhir — ekspor/konversi 8 varian sisa, staging 11 repo `-GGUF` lokal, `liwet-space-cpp/`, dan `Modelfile` Ollama dense. Upload HF kemudian diizinkan dan **diselesaikan pada 2026-11-11** (§10); pembuatan Space **masih menunggu konfirmasi eksplisit pemilik**.
+**Tindak lanjut yang disetujui:** lanjut ke tahap akhir — ekspor/konversi 8 varian sisa, staging 11 repo `-GGUF` lokal, `liwet-space-cpp/`, dan `Modelfile` Ollama dense. Upload HF kemudian diizinkan dan **diselesaikan pada 2026-11-11** (§10); Space yang **sudah ada** (`fadhilahkhairogi/mini-transformer-id`) diperbarui pada hari yang sama dengan backend GGUF-first + fallback PyTorch per model — **tidak ada Space baru**.
 
 ---
 
@@ -453,7 +453,12 @@ memberi 90.5/94.3.
   prompt format, batasan). Atas izin pemilik (2026-11-11) seluruhnya **sudah diunggah** ke
   `fadhilahkhairogi/<Model>-GGUF` (11 repo) dan diverifikasi: 44/44 file manifest cocok
   ukurannya, `README.md` + `.gitattributes` ikut terunggah, README LF-only tanpa `\r\n`.
-  Repo safetensors asli tidak diubah dan **tidak ada Space baru**.
+  Repo safetensors asli tidak diubah dan **tidak ada Space baru**. Space lama
+  `fadhilahkhairogi/mini-transformer-id` diperbarui dengan `liwet_backend.py`
+  (pilih `llamacpp` → fallback `torch` per model; env `LIWET_BACKEND`/`LIWET_GGUF_*`);
+  UI `app.py` identik kecuali satu baris impor. Dense 66M/163M terverifikasi live
+  memakai GGUF (`CPU q8_0`); MoE 400M memakai fork `liwet-moe` (gating + `ffn_exp_probs_b`)
+  karena wheel llama.cpp stok tidak dapat memuat GGUF MoE.
 
 ### 11. Verdict akhir Gate B3
 
@@ -479,4 +484,6 @@ median/mean cosine jelas lulus; top-1 tetap 85.7%/80.0% (<95%), tetapi referensi
 dasar ambang itu sendiri hanya sepakat 57.1% dengan fp32 — kandidat lebih dekat ke fp32 daripada
 referensi. **400M base dipublikasikan sebagai eksperimental** dengan catatan ini, bukan sebagai
 "lulus". Upload HF 11 repo dijalankan atas izin eksplisit pemilik (2026-11-11), selesai dan
-terverifikasi (44/44 file manifest cocok); pembuatan Space belum diizinkan.
+terverifikasi (44/44 file manifest cocok). Space baru tidak dibuat; Space lama
+`mini-transformer-id` diperbarui dengan backend GGUF-first + fallback PyTorch
+(tanpa perubahan UI).
