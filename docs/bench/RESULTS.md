@@ -457,8 +457,11 @@ memberi 90.5/94.3.
   `fadhilahkhairogi/mini-transformer-id` diperbarui dengan `liwet_backend.py`
   (pilih `llamacpp` → fallback `torch` per model; env `LIWET_BACKEND`/`LIWET_GGUF_*`);
   UI `app.py` identik kecuali satu baris impor. Dense 66M/163M terverifikasi live
-  memakai GGUF (`CPU q8_0`); MoE 400M memakai fork `liwet-moe` (gating + `ffn_exp_probs_b`)
-  karena wheel llama.cpp stok tidak dapat memuat GGUF MoE.
+  memakai GGUF (`CPU q8_0`); MoE 400M memakai fallback torch `CUDA bfloat16`.
+  GGUF MoE membutuhkan fork `liwet-moe` (gating `SOFTMAX_WEIGHT` + `ffn_exp_probs_b`);
+  build wheel CPU dari source tarball di Space **melebihi batas 30 menit** (`Job timeout`),
+  sehingga requirements dikembalikan ke wheel prebuilt. Ini bukan kerugian: di GPU,
+  GGUF MoE ~3× lebih lambat (30–34 vs 105 tok/s), jadi fastpath torch adalah pilihan tercepat.
 
 ### 11. Verdict akhir Gate B3
 
